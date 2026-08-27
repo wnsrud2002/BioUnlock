@@ -58,6 +58,16 @@ struct CameraPreviewView: View {
                 }
             }
         }
+        if showLandmarks, let palm = camera.palm {
+            // 색으로 부호 판정 결과를 바로 보여준다 — 청록=손바닥, 주황=손등(또는 부호가 틀림).
+            Canvas { ctx, _ in
+                for p in palm.allJoints {
+                    let v = Self.viewPoint(visionPoint: p, in: rect)
+                    ctx.fill(Path(ellipseIn: CGRect(x: v.x - 3, y: v.y - 3, width: 6, height: 6)),
+                             with: .color(palm.isPalmFacing ? .cyan : .orange))
+                }
+            }
+        }
     }
 
     // Vision 정규화 좌표는 원점이 좌하단이라 SwiftUI 로 옮길 때 y 를 뒤집는다.

@@ -9,6 +9,7 @@
 import SwiftUI
 import AppKit
 import UnlockKit
+import Unlockpalm
 
 struct DebugView: View {
     @ObservedObject var app: AppCoordinator
@@ -59,6 +60,7 @@ struct DebugView: View {
                 section("실물 판정") { livenessPanel }
                 section("인증") { verifyPanel }
                 section("포즈 버킷") { bucketList() }
+                section("손바닥 (개발중 · 로드맵 05번)") { palmPanel }
             }
             .padding(14)
         }
@@ -110,6 +112,38 @@ struct DebugView: View {
             }
             .background(Color.black)
             Text(caption).font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - 손바닥 (로드맵 05번 — 아직 매칭·라이브니스 없음)
+
+    @ViewBuilder
+    private var palmPanel: some View {
+        if let p = camera.palm {
+            HStack(spacing: 8) { palmThumb(p.roi) }
+            row("손", p.chirality == .right ? "오른손" : (p.chirality == .left ? "왼손" : "?"))
+            HStack(spacing: 6) {
+                chip(p.isPalmFacing ? "손바닥" : "손등(또는 부호 반대)", p.isPalmFacing)
+                Button("부호 뒤집기") { PalmConfig.palmFacingSign *= -1 }.font(.system(size: 10))
+            }
+            row("현재 부호", String(format: "%+.0f", PalmConfig.palmFacingSign))
+            row("residual", String(format: "%.2f px", p.residual))
+            row("ROI 원본 픽셀", String(format: "%.0f px", p.sourcePixels))
+            chip("ROI 픽셀 게이트", p.passesSourcePixelGate)
+        } else {
+            empty("손 없음 — 손바닥을 카메라 쪽으로 들어보세요")
+        }
+    }
+
+    private func palmThumb(_ image: CGImage) -> some View {
+        let side: CGFloat = 120
+        return VStack(spacing: 3) {
+            Image(image, scale: 1, label: Text("palm"))
+                .resizable().interpolation(.none)
+                .frame(width: side, height: side)
+                .background(Color.black)
+            Text("\(PalmAligner.roiOutputSize)×\(PalmAligner.roiOutputSize) ROI")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }
 

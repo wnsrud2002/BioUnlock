@@ -16,6 +16,7 @@ import CoreImage
 import Combine
 import AppKit
 import UnlockKit
+import Unlockpalm
 
 /// 정렬·전처리 결과. Phase 3의 임베딩 추출이 이걸 그대로 받는다.
 struct AlignedFaceResult {
@@ -35,6 +36,20 @@ struct AlignedFaceResult {
     var passesEnrollmentGate: Bool { passesAlignment && sharpness >= FaceIDConfig.enrollmentBlurThreshold }
 }
 
+/// 손바닥 정렬·진단 결과. 아직 매칭·라이브니스는 붙지 않은 개발 단계(로드맵 05번)라
+/// 임베딩은 없고, PalmDetector/PalmAligner가 잘 동작하는지 눈으로 확인하는 용도다.
+struct AlignedPalmResult {
+    let roi: CGImage
+    let chirality: VNChirality
+    let isPalmFacing: Bool
+    let residual: CGFloat
+    let sourcePixels: CGFloat
+    /// 디버그 오버레이용 21점 전부(정렬에는 5점만 쓴다).
+    let allJoints: [CGPoint]
+
+    var passesSourcePixelGate: Bool { sourcePixels >= PalmConfig.minSourcePixels }
+}
+
 final class CameraController: NSObject, ObservableObject {
 
     // MARK: - UI가 관찰하는 상태 (메인 스레드에서만 갱신)
@@ -42,6 +57,7 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var face: FaceFrameInfo?
     @Published private(set) var aligned: AlignedFaceResult?
+    @Published private(set) var palm: AlignedPalmResult?
 
     /// 프레임마다 메인 스레드에서 불린다. 등록 세션이 여기에 붙는다.
     var onFrame: ((FaceFrameInfo, AlignedFaceResult) -> Void)?
@@ -68,6 +84,14 @@ final class CameraController: NSObject, ObservableObject {
     private let landmarksRequest: VNDetectFaceLandmarksRequest = {
         let r = VNDetectFaceLandmarksRequest()
         r.revision = VNDetectFaceLandmarksRequestRevision3
+        return r
+    }()
+
+    /// visionQueue 전용. 개발 단계(로드맵 05번) — 얼굴과 같은 프레임에서 같이 돌린다.
+    /// 카메라는 하나뿐이라 별도 AVCaptureSession을 새로 만들지 않고 기존 루프에 얹는다.
+    private let handPoseRequest: VNDetectHumanHandPoseRequest = {
+        let r = VNDetectHumanHandPoseRequest()
+        r.maximumHandCount = 1
         return r
     }()
 
@@ -262,8 +286,9 @@ final class CameraController: NSObject, ObservableObject {
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         var info: FaceFrameInfo?
+        var handObservation: VNHumanHandPoseObservation?
         do {
-            try handler.perform([landmarksRequest])
+            try handler.perform([landmarksRequest, handPoseRequest])
             // 가장 큰 얼굴 하나만 쓴다.
             if let best = (landmarksRequest.results ?? [])
                 .max(by: { $0.boundingBox.width < $1.boundingBox.width }) {
@@ -278,6 +303,7 @@ final class CameraController: NSObject, ObservableObject {
                         i.keyPoints.noseTipFromMedianLine ? 1 : 0))
                 }
             }
+            handObservation = handPoseRequest.results?.first
         } catch {
             NSLog("[Unlockface] Vision 실패: \(error.localizedDescription)")
         }
@@ -290,6 +316,11 @@ final class CameraController: NSObject, ObservableObject {
                                             faceBox: face.boundingBox)
         } else {
             livenessWindow.removeAll()
+        }
+
+        var alignedPalm: AlignedPalmResult?
+        if let handObservation {
+            alignedPalm = makeAlignedPalm(from: ciImage, observation: handObservation)
         }
 
         var image: CGImage?
@@ -312,6 +343,7 @@ final class CameraController: NSObject, ObservableObject {
             guard let self else { return }
             self.face = info
             self.aligned = alignedResult
+            self.palm = alignedPalm
             if let info, let alignedResult { self.onFrame?(info, alignedResult) }
             if let image { self.previewImage = image }
             if let newFPS { self.fps = newFPS }
@@ -429,6 +461,35 @@ private extension CameraController {
             Self.dump(result: result, tag: "f\(framesSeen)")
         }
         return result
+    }
+
+    /// 로드맵 05번(PalmDetector + PalmAligner) — 아직 매칭은 없다. 21점 검출과 5점 정렬이
+    /// 실제 카메라·조명에서 안정적인지, palmFacingSign 부호가 맞는지 눈으로 확인하는 단계다.
+    func makeAlignedPalm(from image: CIImage, observation: VNHumanHandPoseObservation) -> AlignedPalmResult? {
+        guard let points = PalmDetector.points(from: observation) else { return nil }
+
+        let flipLeftHand = observation.chirality == .left
+        guard let diag = PalmAligner.diagnostics(points: points, imageExtent: image.extent,
+                                                 flipLeftHand: flipLeftHand),
+              let aligned = PalmAligner.align(image: image, points: points, flipLeftHand: flipLeftHand)
+        else { return nil }
+
+        let size = PalmAligner.roiOutputSize
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        let bounds = CGRect(x: 0, y: 0, width: CGFloat(size), height: CGFloat(size))
+        pixels.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            ciContext.render(aligned, toBitmap: base, rowBytes: size * 4, bounds: bounds,
+                             format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        }
+        guard let roi = Self.makeCGImage(rgba: pixels, size: size) else { return nil }
+
+        return AlignedPalmResult(roi: roi,
+                                 chirality: observation.chirality,
+                                 isPalmFacing: PalmDetector.isPalmFacing(points, chirality: observation.chirality),
+                                 residual: diag.residual,
+                                 sourcePixels: diag.sourcePixels,
+                                 allJoints: PalmDetector.allPoints(from: observation))
     }
 
     static func dump(result: AlignedFaceResult, tag: String) {

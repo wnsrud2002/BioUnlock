@@ -13,7 +13,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Unlockface",
-            dependencies: ["UnlockKit"],
+            dependencies: ["UnlockKit", "Unlockpalm"],
             path: "Sources/Unlockface",
             // Phase 1은 AVFoundation 델리게이트 콜백이 많아 v6 엄격 동시성 대신 v5 모드 사용
             swiftSettings: [.swiftLanguageMode(.v5)]
@@ -28,6 +28,13 @@ let package = Package(
             name: "UnlockKitTests",
             dependencies: ["UnlockKit"],
             path: "Tests/UnlockKitTests"
+        ),
+        .testTarget(
+            name: "UnlockpalmTests",
+            dependencies: ["Unlockpalm"],
+            path: "Tests/UnlockpalmTests",
+            // PalmConfig의 static var(라이브 튜닝용)를 참조하므로 Unlockpalm과 동일하게 v5 유지
+            swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]
 )
