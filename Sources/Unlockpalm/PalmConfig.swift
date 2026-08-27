@@ -60,10 +60,16 @@ public enum PalmConfig {
     /// 걸 최소한 동작은 하게" 수준이지 보안 임계값이 아니다.
     public static var matchThreshold: Float = 0.73
 
-    /// 연속으로 통과해야 하는 프레임 수. 얼굴의 requiredConsecutiveFrames와 같은 역할.
-    public static var requiredConsecutiveFrames: Int = 3
+    /// 연속으로 통과해야 하는 프레임 수. 얼굴의 requiredConsecutiveFrames와 같은 역할이지만
+    /// 얼굴처럼 3으로 두면 안 된다 — 얼굴은 임계값 여유가 커서(타인 최고 0.37 vs 본인
+    /// 최저 0.71) 연속 3번이 쉽지만, 손바닥은 여유가 0.02뿐이라 실측(2026-08-28) 결과
+    /// 같은 손을 들고 있어도 점수가 0.67~0.84로 계속 출렁였다(10번 중 4번만 통과, p≈0.4).
+    /// 연속 3번 요구 시 성공 확률 0.4³≈6%라 사실상 안 풀렸다. 2로 낮추면 0.4²≈16%.
+    public static var requiredConsecutiveFrames: Int = 2
 
     /// CompCode 인코딩(9×9 커널×6방향 컨볼루션)은 무거워서 프레임마다 돌리지 않는다.
     /// 게이트를 통과한 프레임 중 이 배수째만 실제로 계산한다.
-    public static var matchEveryNFrames: Int = 5
+    /// 5는 점수가 잘 안 넘는(위 requiredConsecutiveFrames 참고) 상황과 겹치면
+    /// 체감 대기시간이 길어져서 3으로 낮췄다 — 초당 시도 횟수를 늘려 확률을 채운다.
+    public static var matchEveryNFrames: Int = 3
 }
