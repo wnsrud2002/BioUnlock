@@ -1,0 +1,1142 @@
+================================================================================
+UNLOCKPALM 설계 노트
+맥북 내장 카메라 손바닥 인증 + GitHub 배포 로드맵
+2026-08-27 / 기준 저장소: ~/dev/workspace/Unlockface (0.1.0)
+================================================================================
+
+이 문서는 새 프로젝트를 처음부터 만드는 가이드가 아니라, 이미 동작하는
+Unlockface(얼굴 인식 언락, Swift + CoreML, 메뉴바 앱) 위에 손바닥 인증을
+얹는 설계다. 요청서의 표준 스택(MediaPipe + Python + PAM) 중 네 가지를
+뒤집었고, 그 근거를 §0에 먼저 둔다.
+
+숫자 중 Unlockface 실측치(0.3715 / 0.93 / 0.48 / 라플라시안 분산표)는
+ENGINEERING.md에서 가져온 것이고, 손바닥 쪽 임계값과 상수는 전부
+'출발점 추정치'다. 같은 방식으로 실측해서 교체해야 한다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+목차
+────────────────────────────────────────────────────────────────────────────────
+
+  0. 요청 전제 네 가지 교정
+  1. 비전 파이프라인
+     1.1 손 검출 — Vision이 안 알려주는 것 하나
+     1.2 ROI 정규화 — 2점으로 풀면 잔차가 항상 0이 된다
+     1.3 CLAHE — CoreImage에는 없고, vImage로 90줄
+     1.4 특징 추출 — 여기가 진짜 리스크
+     1.5 Liveness — MiniFASNet은 전이되지 않는다
+     1.6 잠금 해제 — 코드는 그대로, UX만 문제
+     1.7 임계값 캘리브레이션 — 손바닥판 LFW
+  2. GitHub 배포 · 패키징 아키텍처
+     2.1 배포 형태 — 메뉴바 앱 외에는 답이 없다
+     2.2 모델 가중치 배포 — Git LFS는 쓰지 말 것
+     2.3 CI — 지금 없는 것부터
+     2.4 릴리스 자동화 — TCC가 서명에 묶여 있다는 게 핵심 제약
+  3. 설치와 권한
+     3.1 Homebrew Tap
+     3.2 curl | bash
+     3.3 권한 딥링크와 앱 내 확인
+  4. 저장소 구조와 README
+  5. 실행 순서
+
+
+================================================================================
+0. 요청 전제 네 가지 교정
+================================================================================
+
+요청서의 기술 스택은 "리눅스에서 처음 만든다"를 가정한 표준 구성이다.
+그런데 그 스택은 Unlockface가 이미 실측으로 부정했거나 대체 경로를 찾아
+놓은 것들이다. 같은 벽을 두 번 치지 않기 위한 대조표:
+
+┌─ 요청서 전제 ────────────┬─ 실제로 맞는 것 ──────────────────────────────────┐
+│ MediaPipe Hands로 손 검출 │ Vision VNDetectHumanHandPoseRequest              │
+│                          │ (macOS 11+, 21점, chirality 포함)                │
+│ 근거                     │ MediaPipe는 Python/C++ 런타임을 앱에 끌고 들어    │
+│                          │ 온다. Unlockface는 "Apple 프레임워크만" 원칙으로  │
+│                          │ 20MB .app을 만들었다. 여기서 깨면 배포 난이도가   │
+│                          │ 한 자릿수 배로 뛴다.                              │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ PAM 모듈 / launchd 데몬  │ 메뉴바 앱 + Keychain 비밀번호 + CGEvent 주입      │
+│ 근거                     │ ENGINEERING.md: "macOS는 서드파티가 로그인/잠금   │
+│                          │ 화면 인증 경로에 끼어드는 것을 SIP로 막는다."     │
+│                          │ PAM 모듈을 /usr/local/lib/pam 에 넣어도            │
+│                          │ SecurityAgent는 카메라 TCC 권한이 없다 —          │
+│                          │ 모듈이 카메라를 못 연다.                          │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ ArcFace/CosFace 임베딩   │ v0.1은 학습 없는 CompCode, v0.2에서 학습 임베딩   │
+│ 학습                     │                                                  │
+│ 근거                     │ 손바닥은 얼굴과 달리 Apache-2.0 사전학습 가중치가 │
+│                          │ 사실상 없다. 반면 Gabor 기반 CompCode는 PolyU     │
+│                          │ EER 0.04%대로 실용 수준이고 라이선스 리스크 0.    │
+├──────────────────────────┼──────────────────────────────────────────────────┤
+│ 별도 저장소 + 별도 CI    │ 같은 저장소, UnlockKit 라이브러리 타겟으로 분리   │
+│ + 별도 서명              │                                                  │
+│ 근거                     │ TCC 권한은 코드서명 식별자에 묶인다. 앱을 둘로    │
+│                          │ 쪼개면 사용자가 카메라·접근성 권한을 두 번        │
+│                          │ 허용해야 하고, 릴리스·서명·공증 파이프라인도      │
+│                          │ 두 벌이 된다.                                    │
+└──────────────────────────┴──────────────────────────────────────────────────┘
+
+■ 권장 구조
+
+저장소 하나, SwiftPM 타겟 셋:
+    UnlockKit (공용 라이브러리) / Unlockface / Unlockpalm
+
+제품은 "앱 하나에 인증 수단 두 개"로 내보내고, 설정에서
+"얼굴" / "손바닥" / "둘 다 통과해야 해제"를 고르게 한다.
+
+부수 효과가 크다: 지금 swift test를 못 돌리는 이유가 executableTarget
+하나뿐이라서인데, UnlockKit이 생기면 CI에 테스트를 붙일 수 있게 된다.
+커밋 2개짜리 지금이 재구조화 비용이 가장 싸다.
+
+■ UnlockKit으로 옮길 파일 (수정 없이 이동)
+
+    UnlockService.swift
+    LoginPasswordStore.swift
+    KeychainStore.swift
+    ScreenLockMonitor.swift
+    DiagnosticLog.swift
+    CameraController.swift
+    WindowVisibilityObserver.swift
+    FaceAligner.similarityTransform   → Geometry.similarityTransform
+    FaceEmbedder의 벡터 연산 3개       → VectorMath
+
+손바닥 쪽에서 새로 써야 하는 건 대략 6개 파일:
+    PalmDetector / PalmAligner / PalmPreprocessor
+    PalmMatcher / PalmLiveness / PalmProfileStore
+
+나머지는 재사용.
+
+
+================================================================================
+1. 비전 파이프라인
+================================================================================
+
+  [01] 프레임 취득      수정 재사용   잠금 중에만 카메라 ON.
+                                     손바닥은 텍스처가 생명 → preset 최고 해상도
+  [02] 손 검출 21점     신규          Vision HandPose + 손바닥/손등 판별
+  [03] ROI 정규화       신규          MCP 4점 + 손목 → 유사변환 → 정준 프레임
+                       (수학 재사용)  → ROI 크롭 128×128
+  [04] CLAHE 전처리     신규          vImage 타일 히스토그램 평활화 + 클립
+  [05] 특징 추출        신규          v0.1 CompCode / v0.2 CoreML 임베딩
+  [06] Liveness         신규          MiniFASNet 전이 안 됨 → 비강체 잔차 + 챌린지
+  [07] 매칭 게이트      그대로 재사용 임계값 + 연속 N프레임, 집계는 반드시 최소값
+  [08] 잠금 해제        그대로 재사용 CGSession 재확인 → 백스페이스 24 → 주입
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.1 손 검출 — Vision이 안 알려주는 것 하나
+────────────────────────────────────────────────────────────────────────────────
+
+VNHumanHandPoseObservation은 21점과 chirality(왼손/오른손)를 준다.
+그런데 손바닥을 보는 중인지 손등을 보는 중인지는 알려주지 않는다.
+오른손 손등은 왼손 손바닥과 2D 투영이 거의 같아서, 이걸 안 거르면
+등록된 오른손 손바닥이 왼손 손등으로도 매칭될 여지가 생긴다.
+
+판별법: 손등을 보면 랜드마크 좌표계의 방향(handedness)이 뒤집힌다.
+새끼→검지 벡터와 손목→중지 벡터의 외적 부호 하나로 판정된다.
+
+--- Sources/Unlockpalm/PalmDetector.swift (신규) -------------------------------
+
+// Vision 은 chirality(왼손/오른손)만 준다. 손바닥/손등은 직접 판별해야 한다.
+// 손등을 보면 2D 랜드마크 프레임의 방향이 뒤집히므로 외적 부호로 걸러진다.
+//
+// 부호는 반드시 실측으로 확정할 것 — 전면 카메라 미러링 여부,
+// CVPixelBuffer 의 orientation 설정에 따라 통째로 뒤집힌다.
+// (Unlockface Phase 1 에서 yaw/roll 부호로 똑같은 데 한 번 빠졌다.)
+private let palmFacingSign: CGFloat = -1   // ← 실측 후 확정
+
+static func isPalmFacing(_ p: PalmPoints, chirality: VNChirality) -> Bool {
+    let across = CGPoint(x: p.indexMCP.x - p.littleMCP.x,
+                         y: p.indexMCP.y - p.littleMCP.y)
+    let along  = CGPoint(x: p.middleMCP.x - p.wrist.x,
+                         y: p.middleMCP.y - p.wrist.y)
+    let z = across.x * along.y - across.y * along.x
+    let want = (chirality == .right) ? palmFacingSign : -palmFacingSign
+    return z * want > 0
+}
+
+// 신뢰도 게이트: 21점 전부가 아니라 정렬에 쓰는 5점만 엄격하게 본다.
+// 손가락 끝은 자주 가려지지만 MCP·손목은 거의 안 가려진다.
+static let alignmentJoints: [VNHumanHandPoseObservation.JointName] =
+    [.indexMCP, .middleMCP, .ringMCP, .littleMCP, .wrist]
+static let minJointConfidence: Float = 0.7
+
+-------------------------------------------------------------------------------
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.2 ROI 정규화 — 2점으로 풀면 잔차가 항상 0이 된다
+────────────────────────────────────────────────────────────────────────────────
+
+고전 팜프린트 ROI는 검지-중지 사이 골(V1)과 약지-소지 사이 골(V2),
+두 점으로 좌표계를 세운다. Vision에는 골 점이 없으니 MCP 중점으로
+근사하면 된다 — 여기까지는 표준이다.
+
+!! 함정 !!
+2점으로 유사변환(4자유도)을 풀면 미지수 4개에 방정식 4개라 항상 완벽하게
+맞는다. 즉 FaceAligner.residual과 같은 정렬 자가진단이 구조적으로
+불가능해진다. 손바닥은 얼굴보다 자세 변화가 훨씬 심한데, 품질 신호를
+잃은 채로 들어가게 된다.
+
+해결: MCP 4점 + 손목 = 5점을 쓴다. Unlockface가 얼굴 5점으로 만든 것과
+같은 과결정 구조가 되어, 잔차가 다시 "자세 이상 + 검출 노이즈"의 통합
+품질 지표로 살아난다. MCP 4점만 쓰면 거의 일직선이라 수직 방향으로
+조건수가 나빠지니, 손목이 공선성을 깨는 역할도 겸한다.
+
+정렬과 ROI 정의는 분리한다 — 5점으로 정준 손 프레임(192×192)을 만들고,
+그 안에서 고정 사각형을 잘라 팜프린트 ROI로 쓴다. 나중에 ROI를 튜닝할 때
+변환 코드를 안 건드려도 된다.
+
+--- Sources/Unlockpalm/PalmAligner.swift (신규, 변환 함수는 UnlockKit 재사용) ---
+
+enum PalmAligner {
+
+    /// 정준 손 프레임 192×192, 원점 좌하단(CoreImage 규약 — FaceAligner 와 동일).
+    /// 왼손은 입력 단계에서 좌우 반전해 넣으므로 정준 세트는 하나면 된다.
+    ///
+    /// 이 좌표는 출발점일 뿐이다. 등록 샘플 20장의 평균 정렬 잔차가 최소가
+    /// 되도록 한 번 재추정하고, 그 값을 여기 박아 넣을 것.
+    static let canonical192: [CGPoint] = [
+        CGPoint(x: 146, y: 158),   // indexMCP
+        CGPoint(x: 114, y: 164),   // middleMCP
+        CGPoint(x:  82, y: 160),   // ringMCP
+        CGPoint(x:  52, y: 146),   // littleMCP
+        CGPoint(x:  98, y:  14)    // wrist
+    ]
+
+    /// 정준 프레임 안에서 실제로 매칭에 쓰는 팜프린트 영역.
+    /// 손목 주름(변형 심함)과 손가락 밑동(가림 잦음)을 뺀 안쪽.
+    static let roiInCanonical = CGRect(x: 44, y: 40, width: 112, height: 112)
+    static let roiOutputSize = 128
+
+    static func align(image: CIImage, points: PalmPoints, mirrored: Bool) -> CIImage? {
+        let extent = image.extent
+        var src = points.alignmentArray.map {
+            CGPoint(x: extent.origin.x + $0.x * extent.width,
+                    y: extent.origin.y + $0.y * extent.height)
+        }
+        if mirrored { src = src.map { CGPoint(x: extent.maxX - $0.x, y: $0.y) } }
+
+        // UnlockKit 로 옮긴 FaceAligner 의 최소제곱 유사변환을 그대로 쓴다.
+        guard let t = Geometry.similarityTransform(from: src, to: canonical192)
+        else { return nil }
+
+        let base = mirrored
+            ? image.transformed(by: CGAffineTransform(scaleX: -1, y: 1)
+                                     .translatedBy(x: -extent.maxX, y: 0))
+            : image
+        return base.clampedToExtent()
+                   .transformed(by: t)
+                   .cropped(to: roiInCanonical)
+    }
+
+    /// 팜프린트 고유 게이트: 원본에서 ROI 가 실제로 몇 픽셀이었나.
+    /// 손바닥은 얼굴과 달리 '주름 텍스처'가 특징이라, 업샘플된 ROI 는 정보가 없다.
+    /// 유사변환의 스케일 성분으로 역산한다.
+    static func sourcePixelsPerROISide(_ t: CGAffineTransform) -> CGFloat {
+        let scale = sqrt(t.a * t.a + t.b * t.b)   // 등방 스케일
+        return roiInCanonical.width / scale
+    }
+    static let minSourcePixels: CGFloat = 160   // ← 실측으로 확정
+}
+
+-------------------------------------------------------------------------------
+
+■ 실측해야 하는 임계값 3개
+
+Unlockface가 라플라시안 분산으로 블러 절벽(0.5~1.0px)을 찾아 인증 120 /
+등록 300을 잡은 방식 그대로, 손바닥도 감으로 정하면 안 된다.
+
+  - 정렬 잔차
+    손바닥을 15°, 30°, 45° 기울여가며 5점 잔차를 재고, 임베딩 유사도가
+    무너지기 시작하는 각도를 경계로.
+
+  - ROI 원본 픽셀 수
+    20cm / 30cm / 40cm / 50cm 거리에서 ROI 픽셀 수와 본인 점수를 같이
+    재면 절벽이 보인다.
+
+  - 선명도
+    얼굴과 같은 방법이지만 임계값은 재측정. 128×128 손바닥 ROI의
+    라플라시안 분산 스케일은 112×112 얼굴과 다르다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.3 CLAHE — CoreImage에는 없고, vImage로 90줄
+────────────────────────────────────────────────────────────────────────────────
+
+CoreImage에 CLAHE 필터는 없다. 새 의존성 없이 하려면 Accelerate로 직접
+짠다: 그레이스케일 ROI를 8×8 타일로 나눠 타일마다 히스토그램을 만들고,
+클립 리밋으로 빈을 자른 뒤 잘린 양을 균등 재분배하고, CDF를 LUT로 굳힌
+다음 픽셀마다 인접 4타일 LUT를 이중선형 보간한다.
+
+vImageEqualization_Planar8은 전역 평활화라 그대로는 못 쓰지만,
+타일별 히스토그램 계산에 vImageHistogramCalculation_Planar8을 쓰면 된다.
+
+!! 함정 — SFace 이중정규화와 같은 종류 !!
+전처리는 학습과 짝이다. CLAHE를 적용한 ROI로 학습한 모델에는 추론 때도
+CLAHE를 넣어야 하고, 안 넣고 학습한 모델에 CLAHE를 넣으면 조용히 틀어진다.
+SFace ONNX 그래프 안에 Sub/Mul이 이미 있어서 Swift에서 또 정규화하면
+안 됐던 것과 정확히 같은 구조의 버그다.
+
+CompCode(§1.4)를 쓰면 이 문제가 사라진다 — Gabor 응답의 argmin만 쓰기
+때문에 밝기·대비에 원래 불변이라 CLAHE가 있어도 없어도 코드가 거의 안
+바뀐다. v0.1에서 CLAHE를 선택 사항으로 두고, 학습 모델을 붙이는 v0.2에서
+학습 파이프라인과 함께 고정할 것.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.4 특징 추출 — 여기가 진짜 리스크다
+────────────────────────────────────────────────────────────────────────────────
+
+얼굴에는 Apache-2.0 SFace가 있었다. 손바닥에는 그에 해당하는 게 사실상
+없다. 공개 팜프린트 데이터셋은 거의 전부 "비상업적 연구 목적 한정"이고,
+상당수는 파생 모델 재배포까지 명시적으로 제한한다. InsightFace 때 배포
+직전에 발견한 것과 완전히 같은 지뢰다.
+
+┌─ 경로 ──────────────┬─ 정확도 ────┬─ 라이선스 ─┬─ 구현 비용 ──┬─ 판정 ─────┐
+│ CompCode            │ PolyU EER   │ 없음       │ Swift ~200줄 │ v0.1 채택  │
+│ Gabor 6방향 + 해밍  │ ~0.04%      │ 학습 데이터│ vImage 컨볼  │            │
+│                     │ (접촉식)    │ 자체가 없음│              │            │
+├─────────────────────┼─────────────┼────────────┼──────────────┼────────────┤
+│ MobileFaceNet +     │ 더 높음     │ 높음       │ 학습 +       │ v0.2       │
+│ ArcFace 직접 학습   │ (비접촉 특히)│ 약관 원문  │ ONNX→CoreML  │            │
+│                     │             │ 확인 필수  │ + 3중 검증   │            │
+├─────────────────────┼─────────────┼────────────┼──────────────┼────────────┤
+│ ImageNet 백본 그대로│ 낮음        │ 낮음       │ 낮음         │ 권장 안 함 │
+│ + few-shot 등록     │             │            │              │            │
+├─────────────────────┼─────────────┼────────────┼──────────────┼────────────┤
+│ 손 기하학 단독      │ 매우 낮음   │ 없음       │ 매우 낮음    │ 보조 게이트│
+│ (길이·너비 비율)    │             │            │              │ 로만       │
+└─────────────────────┴─────────────┴────────────┴──────────────┴────────────┘
+
+■ 권장 — v0.1은 학습 없이 출시
+
+CompCode(Kong & Zhang, 2004)는 팜프린트에서 얼굴의 LBP와 위상이 다르다.
+얼굴에서 고전 방식은 딥러닝에 완패했지만, 팜프린트에서는 고전 코딩 방식이
+지금도 경쟁력이 있다 — 손금이라는 명확한 방향성 선 구조를 직접 인코딩하기
+때문이다.
+
+가중치 파일도, 데이터셋 약관도, ONNX→CoreML 변환 검증도 없이 v0.1을 낼 수
+있고, 그동안 §1.7의 임계값 실측 인프라를 먼저 갖춰 놓을 수 있다.
+학습 임베딩은 그 인프라 위에 얹으면 된다.
+
+--- Sources/Unlockpalm/PalmMatcher.swift (v0.1 CompCode) ----------------------
+
+// CompCode: 6방향(0°,30°,…,150°) Gabor 실수부 뱅크를 ROI 에 돌리고,
+// 픽셀마다 '응답이 최소인 방향'의 인덱스를 코드로 삼는다.
+// 손금은 주변보다 어두우므로 선 방향과 나란한 필터에서 응답이 최소가 된다.
+//
+// argmin 만 쓰기 때문에 밝기·대비 변화에 원래 불변이다 — 조명 강인성을
+// 전처리가 아니라 표현 자체가 갖는다.
+
+struct PalmCode {
+    let bits: [UInt8]   // 128×128 각 픽셀당 3비트(0…5), 비트플레인 3장
+    let mask: [UInt8]   // 유효 픽셀(ROI 안 + 응답 크기 충분)
+}
+
+/// 정규화 해밍 거리. 정렬 오차 흡수를 위해 ±3px 이동 탐색 후 최솟값.
+/// 코사인 유사도와 방향을 맞추려면 1 - distance 를 점수로 쓴다.
+static func score(_ a: PalmCode, _ b: PalmCode) -> Float {
+    var best: Float = 1.0
+    for dy in -3...3 {
+        for dx in -3...3 {
+            best = min(best, angularHamming(a, b, dx: dx, dy: dy))
+        }
+    }
+    return 1 - best
+}
+
+// 방향 인덱스는 원형이다(0 과 5 는 30° 차이지 150° 차이가 아니다).
+// 단순 XOR 해밍을 쓰면 이 wrap-around 를 놓쳐 조용히 성능이 깎인다.
+private static func angularDiff(_ x: UInt8, _ y: UInt8) -> Float {
+    let d = Int(x) - Int(y)
+    return Float(min(abs(d), 6 - abs(d))) / 3.0
+}
+
+-------------------------------------------------------------------------------
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.5 Liveness — MiniFASNet은 전이되지 않는다
+────────────────────────────────────────────────────────────────────────────────
+
+!! 함정 !!
+번들에 이미 들어 있는 MiniFASNet 두 개는 얼굴 크롭으로 학습된 모델이다
+(크롭 배율 2.7배/4.0배가 얼굴 박스 기준). 손바닥 ROI를 넣으면 의미 있는
+점수가 아니라 정의되지 않은 출력이 나온다. Unlockface Phase 4의 버그 1
+(정답 라벨 샘플조차 위조로 나옴)과 겉보기 증상이 똑같아서, 모르고 붙이면
+"임계값을 조정하면 될 것 같은데" 하며 몇 시간을 태우게 된다.
+
+┌─ 방식 ────────────────┬─ 막는 공격 ────────┬─ 못 막는 것 ─┬─ 판정 ──────────┐
+│ 비강체 잔차           │ 인쇄 사진,         │ 동영상 재생  │ v0.1 기본(수동) │
+│ 연속 프레임 랜드마크  │ 정지 화면 재생     │              │                 │
+│ 간 유사변환 잔차      │                    │              │                 │
+├───────────────────────┼────────────────────┼──────────────┼─────────────────┤
+│ 챌린지-응답           │ 사진 · 화면 재생 · │ 실시간 딥페이│ v0.1 필수(능동) │
+│ 무작위 손가락 개수/   │ 사전 녹화 영상     │ 크(현실성 낮)│                 │
+│ 제스처 요구           │                    │              │                 │
+├───────────────────────┼────────────────────┼──────────────┼─────────────────┤
+│ 고주파 텍스처 에너지  │ 저해상도 인쇄물,   │ 고해상도     │ 보조 신호       │
+│ ROI FFT 중고역 대역   │ 모아레             │ 디스플레이   │                 │
+├───────────────────────┼────────────────────┼──────────────┼─────────────────┤
+│ 전용 안티스푸핑 모델  │ 대부분             │ —            │ v0.3            │
+│ 학습                  │                    │              │ (공격 데이터    │
+│                       │                    │              │  직접 수집)     │
+└───────────────────────┴────────────────────┴──────────────┴─────────────────┘
+
+수동 신호가 애매할 때만 챌린지를 띄우는 2단 구성이 실사용에서 낫다.
+
+■ 불변 규칙 (Phase 4 버그 2의 교훈이 그대로 적용된다)
+
+보안 게이트의 집계는 평균이 아니라 최소값.
+신호가 셋(비강체 잔차 / 고주파 / 챌린지)이면 셋 중 최솟값,
+프레임 5장이면 5장 중 최솟값, 창이 다 찰 때까지는 판정 보류.
+
+평균을 쓰면 좋은 프레임 두 장이 나쁜 프레임 세 장을 구제해 준다 —
+(0.99 × 2) / 5 = 0.396 으로 실제로 통과됐던 그 계산이다.
+
+그리고 판정을 '못 한' 경우는 통과가 아니라 차단(fail-closed).
+UnlockService.feed 가 이미 그렇게 짜여 있다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.6 잠금 해제 — 코드는 그대로, UX만 문제
+────────────────────────────────────────────────────────────────────────────────
+
+UnlockService.swift는 손바닥이든 얼굴이든 상관없다. feed(aligned:)의
+시그니처만 프로토콜로 바꾸면 된다. 안전장치 3개(주입 직전 CGSession
+재확인 / UUID 시도 무효화 / 백스페이스 24회)도 그대로 유효하다.
+
+■ 얼굴과 다른 점 — 피드백을 줄 수 없다
+
+얼굴은 뚜껑을 열면 그냥 되지만, 손바닥은 사용자가 손을 들어 올려 프레임
+안에 맞춰야 한다. 그런데 잠금화면은 SecurityAgent가 소유하고 있어서
+그 위에 안내 오버레이를 띄울 수 없다(CGShieldingWindowLevel 위로
+안정적으로 못 올라간다). 손이 프레임 밖인지, 너무 먼지, 손등을 보이고
+있는지를 화면으로 알려줄 방법이 없다.
+
+현실적인 답 두 개:
+
+  1) 소리 피드백 — NSSound로 "손 감지됨" / "인식 성공"을 다른 톤으로.
+     잠금 중에도 재생된다.
+
+  2) 메뉴바에 연습 모드 — 잠금이 풀린 상태에서 실시간 ROI·품질 점수를
+     보여주며 사용자가 적정 거리·각도를 몸으로 익히게 한다.
+     이건 있으면 좋은 게 아니라 없으면 못 쓰는 기능이다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+1.7 임계값 캘리브레이션 — 손바닥판 LFW
+────────────────────────────────────────────────────────────────────────────────
+
+얼굴은 LFW 5,675명으로 타인 최고 0.3715를 재서 0.48이 근거를 얻었다.
+손바닥도 같은 걸 해야 하고, 같은 규칙이 적용된다:
+
+  일괄 채점을 '인증에 쓰는 것과 같은 코드 경로'로 돌릴 것.
+  별도 스크립트로 재면 그 스크립트의 오차를 재게 된다.
+  BatchEmbedder.swift가 이미 그 구조다.
+
+타인 세트 후보:
+  - Tongji Contactless Palmprint (600손 × 20장, 비접촉)
+    → 이 프로젝트와 촬영 조건이 가장 가깝다
+  - IITD Touchless Palmprint (230명)
+  - 11k Hands (190명, 손등 포함)
+
+셋 다 약관 원문을 먼저 읽을 것. "채점에만 쓰고 배포하지 않는다"면
+대부분 문제없지만, 여기서 학습한 가중치를 릴리스에 올리는 건 완전히
+다른 얘기다.
+
+목표 산출물은 ENGINEERING.md에 들어갈 이 표 한 줄:
+    타인 최고 / 본인 최저 / 분리 여유 / 임계값 X에서의 FAR·FRR
+
+
+================================================================================
+2. GITHUB 배포 · 패키징 아키텍처
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+2.1 배포 형태 — 메뉴바 앱 외에는 답이 없다
+────────────────────────────────────────────────────────────────────────────────
+
+┌─ 형태 ─────────────┬─ 카메라 TCC ────────┬─ 접근성 TCC ─┬─ 설치 ─┬─ 판정 ──┐
+│ CLI 도구           │ 터미널에 귀속        │ 동일 문제    │ 낮음   │ 불가    │
+│                    │ 권한이 앱이 아니라   │              │        │         │
+│                    │ Terminal.app에 붙음  │              │        │         │
+├────────────────────┼──────────────────────┼──────────────┼────────┼─────────┤
+│ launchd 데몬       │ 불가                 │ 불가         │ 높음   │ 불가    │
+│ (LaunchDaemon,root)│ 사용자 세션 밖이라   │              │        │         │
+│                    │ TCC 부여 대상 아님   │              │        │         │
+├────────────────────┼──────────────────────┼──────────────┼────────┼─────────┤
+│ LaunchAgent        │ 가능하나 권한 요청   │ 동일         │ 중간   │ 차선    │
+│ (세션 내, GUI 없음)│ 대화상자를 띄울 UI가 │              │        │         │
+│                    │ 없음                 │              │        │         │
+├────────────────────┼──────────────────────┼──────────────┼────────┼─────────┤
+│ 메뉴바 앱          │ 정상                 │ 정상         │ 낮음   │ 채택    │
+│ LSUIElement +      │                      │              │ .app   │         │
+│ SMAppService       │                      │              │ 드래그 │         │
+└────────────────────┴──────────────────────┴──────────────┴────────┴─────────┘
+
+Unlockface가 이미 이 형태다. 손바닥을 위해 바꿀 이유가 없고, 오히려
+같은 앱에 합치면 사용자는 권한을 한 번만 허용하면 된다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.2 모델 가중치 배포 — Git LFS는 쓰지 말 것
+────────────────────────────────────────────────────────────────────────────────
+
+┌─ 방식 ──────────────┬─ 무료 한도 ────────┬─ 실사용 결과 ──────────┬─ 판정 ──┐
+│ Git LFS             │ 저장 1GB /         │ 스타 좀 받으면 월초에  │ 쓰지    │
+│                     │ 대역폭 1GB·월      │ 대역폭이 소진돼        │ 말 것   │
+│                     │                    │ git clone 이 실패한다. │         │
+│                     │                    │ 원인 불명 에러로 보임. │         │
+├─────────────────────┼────────────────────┼────────────────────────┼─────────┤
+│ 저장소에 직접 커밋  │ 파일당 50MB 경고 / │ 현재 Models/ 20MB —    │ ~50MB   │
+│                     │ 100MB 차단         │ 지금은 정상. .mlpackage│ 까지    │
+│                     │                    │ 는 디렉토리라 안쪽     │         │
+│                     │                    │ weights.bin 크기가 기준│         │
+├─────────────────────┼────────────────────┼────────────────────────┼─────────┤
+│ Releases 에셋 +     │ 파일당 2GB /       │ 공개 저장소에서 사실상 │ 50MB    │
+│ fetch 스크립트      │ 대역폭 무제한      │ 무료 CDN.              │ 초과 시 │
+└─────────────────────┴────────────────────┴────────────────────────┴─────────┘
+
+■ 핵심 구분
+
+최종 사용자는 모델을 따로 받지 않는다. 모델은 .app 번들 안에 컴파일된
+.mlmodelc로 들어가 있으니까. 런타임 다운로드가 필요한 대상은 소스에서
+빌드하는 개발자뿐이다. 그래서 전략은:
+
+  - 사용자   → .app 에 번들 (변경 없음)
+  - 개발자   → models-v1 태그의 Releases 에셋에서 scripts/fetch-models.sh 로
+               받고 ~/Library/Caches 에 캐싱
+  - 어느 쪽도 LFS 아님
+
+--- models/manifest.json (신규) -----------------------------------------------
+
+{
+  "release_tag": "models-v1",
+  "models": [
+    { "file": "SFace.mlpackage.zip",
+      "sha256": "…",  "bytes": 18874368 },
+    { "file": "AntiSpoof_MiniFASNetV2.mlpackage.zip",
+      "sha256": "…",  "bytes": 958464 },
+    { "file": "AntiSpoof_MiniFASNetV1SE.mlpackage.zip",
+      "sha256": "…",  "bytes": 970752 }
+  ]
+}
+
+-------------------------------------------------------------------------------
+
+--- scripts/fetch-models.sh (신규) --------------------------------------------
+
+#!/bin/bash
+# Models/ 를 채운다. 이미 있고 sha256 이 맞으면 아무것도 안 한다.
+# package.sh 가 맨 앞에서 이 스크립트를 호출하도록 한 줄 추가할 것.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CACHE="$HOME/Library/Caches/tech.unlockface.models"
+REPO="wnsrud2002/Unlockface"
+TAG=$(/usr/bin/plutil -extract release_tag raw -o - "$ROOT/models/manifest.json")
+
+mkdir -p "$CACHE" "$ROOT/Models"
+
+count=$(/usr/bin/plutil -extract models raw -o - "$ROOT/models/manifest.json")
+for i in $(seq 0 $((count - 1))); do
+  file=$(/usr/bin/plutil -extract models.$i.file   raw -o - "$ROOT/models/manifest.json")
+  want=$(/usr/bin/plutil -extract models.$i.sha256 raw -o - "$ROOT/models/manifest.json")
+  dest="$ROOT/Models/${file%.zip}"
+
+  # 이미 풀려 있으면 건너뛴다.
+  [ -d "$dest" ] && { echo "skip  $file"; continue; }
+
+  if [ ! -f "$CACHE/$file" ]; then
+    echo "fetch $file"
+    curl -fsSL --retry 3 -o "$CACHE/$file" \
+      "https://github.com/$REPO/releases/download/$TAG/$file"
+  fi
+
+  # 검증 실패는 캐시를 지우고 즉시 중단한다. 조용히 넘어가면
+  # 깨진 가중치로 빌드된 앱이 '인식률이 좀 낮네' 로 위장한다.
+  got=$(shasum -a 256 "$CACHE/$file" | cut -d' ' -f1)
+  if [ "$got" != "$want" ]; then
+    rm -f "$CACHE/$file"
+    echo "sha256 불일치: $file" >&2; exit 1
+  fi
+
+  ditto -x -k "$CACHE/$file" "$ROOT/Models"
+  echo "ok    $file"
+done
+
+-------------------------------------------------------------------------------
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.3 CI — 지금 없는 것부터
+────────────────────────────────────────────────────────────────────────────────
+
+.github/ 디렉토리가 아예 없다. 릴리스 자동화보다 먼저 '깨진 걸 깨졌다고
+말해 주는 CI'가 필요하다.
+
+■ Intel 러너 관련
+
+macos-13이 마지막 Intel 이미지이고 은퇴 수순이다. 그런데 매트릭스가
+필요 없다 — swift build --arch arm64 --arch x86_64 가 arm64 러너에서
+유니버설 바이너리를 크로스 컴파일한다(package.sh가 이미 그렇게 한다).
+Intel 러너는 "Intel에서 실제로 실행되는가"를 테스트할 때만 의미가 있고,
+ENGINEERING.md의 알려진 한계에 그게 미검증이라고 이미 적혀 있으니 —
+Intel 러너가 살아 있는 동안 swift test만 거기서 한 번 더 돌려 그 한계를
+지우는 게 실익이다.
+
+--- .github/workflows/ci.yml (신규) -------------------------------------------
+
+name: ci
+on:
+  push:     { branches: [main, master] }
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 유니버설 빌드
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      # package.sh 와 같은 방식으로 빌드해야 CI 가 릴리스를 대변한다.
+      - run: swift build -c release --arch arm64 --arch x86_64
+      - name: 유니버설인지 확인
+        run: |
+          BIN=$(find .build -name Unlockface -type f -perm +111 | head -1)
+          file "$BIN" | tee /dev/stderr | grep -q "universal binary with 2 architectures"
+
+  test:
+    name: 테스트 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-13]   # macos-13 = 마지막 Intel 이미지
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+
+-------------------------------------------------------------------------------
+
+■ 가장 먼저 붙일 테스트 3개
+
+  1) Geometry.similarityTransform — 순수 함수.
+     알려진 회전+스케일을 넣고 역산이 맞는지, 반사가 안 나오는지,
+     공선 입력에서 nil인지. "여기가 틀리면 임베딩·안티스푸핑이 전부
+     무너진다"고 주석에 적어 놓은 그 함수다.
+
+  2) EmbedderSelfTest를 XCTest로 승격 — 고정 입력의 임베딩이 저장된
+     기준 벡터와 코사인 0.9999 이상인지. CoreML/OS 업데이트가 조용히
+     출력을 바꾸는 걸 잡는다.
+
+  3) PalmMatcher.angularDiff — wrap-around(0↔5)가 실제로 처리되는지.
+     조용히 틀리기 딱 좋은 함수다.
+
+셋 다 카메라도 화면 잠금도 필요 없어서 헤드리스 러너에서 돈다.
+이게 UnlockKit 라이브러리 타겟이 필요한 이유이기도 하다 —
+executableTarget만 있으면 @testable import가 안 된다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2.4 릴리스 자동화 — TCC가 서명에 묶여 있다는 게 CI의 핵심 제약
+────────────────────────────────────────────────────────────────────────────────
+
+!! 함정 — 여기가 CI에서 제일 중요한 지점 !!
+
+README에 이미 적어 둔 대로 카메라·키체인 권한은 코드 서명 식별자에
+묶인다. CI가 릴리스마다 새 임시 인증서로 서명하면, 사용자가 업데이트할
+때마다 카메라 권한을 다시 허용해야 하고 키체인의 등록 데이터에 접근을
+못 하게 된다. "업데이트했더니 등록한 얼굴이 사라졌어요" 이슈가 그대로
+열린다.
+
+그래서 CI 서명 인증서는 고정이어야 한다. setup-signing.sh가 만드는 로컬
+자체서명 인증서를 .p12로 내보내 base64로 시크릿에 넣고, 릴리스마다 같은
+걸 임시 키체인에 임포트한다. Apple Developer ID($99/년)가 있으면 그걸
+쓰고 공증까지 하면 우클릭 안내 자체가 사라진다.
+
+먼저 package.sh가 CI에서 식별자를 받을 수 있게 3줄만 고친다:
+
+--- scripts/package.sh 수정 — [4/5] 코드서명 블록 ------------------------------
+
+-IDENTITY="Unlockface Dev"
++# CI 는 시크릿의 고정 인증서를 임시 키체인에 임포트하고 이 변수로 넘긴다.
++# TCC 권한이 서명 식별자에 묶이므로 릴리스마다 식별자가 바뀌면 안 된다.
++IDENTITY="${SIGN_IDENTITY:-Unlockface Dev}"
+ if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
+
+-------------------------------------------------------------------------------
+
+--- .github/workflows/release.yml (신규) --------------------------------------
+
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write            # gh release create 에 필요
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # 태그와 Info.plist 가 어긋난 릴리스를 만드는 건 되돌리기 가장 귀찮은 실수다.
+      # 빌드 전에 실패시킨다.
+      - name: 태그 ↔ Info.plist 버전 일치 확인
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PLIST=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist)
+          echo "tag=$TAG plist=$PLIST"
+          [ "$TAG" = "$PLIST" ] || { echo "::error::버전 불일치"; exit 1; }
+
+      - name: 고정 서명 인증서를 임시 키체인에 임포트
+        env:
+          CERT_P12:      ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KC_PASSWORD:   ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KC_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          # 이게 없으면 codesign 이 GUI 암호 프롬프트를 띄우려다 러너에서 멈춘다.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KC_PASSWORD" build.keychain
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: 모델 가져오기
+        run: ./scripts/fetch-models.sh
+
+      - name: 유니버설 빌드 + 서명 + ZIP
+        env:
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: ./scripts/package.sh
+
+      # Developer ID 가 있을 때만. 없으면 통째로 건너뛰고
+      # README 의 우클릭 안내가 유효하다.
+      - name: 공증 + 스테이플
+        if: ${{ secrets.NOTARY_APPLE_ID != '' }}
+        env:
+          AC_ID:   ${{ secrets.NOTARY_APPLE_ID }}
+          AC_TEAM: ${{ secrets.NOTARY_TEAM_ID }}
+          AC_PWD:  ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          xcrun notarytool submit "build/Unlockface-$V.zip" \
+            --apple-id "$AC_ID" --team-id "$AC_TEAM" --password "$AC_PWD" --wait
+          # 스테이플은 .app 에 찍고 나서 다시 압축해야 한다. ZIP 에는 못 찍는다.
+          xcrun stapler staple build/Unlockface.app
+          ditto -c -k --keepParent build/Unlockface.app "build/Unlockface-$V.zip"
+          spctl -a -vvv -t install build/Unlockface.app
+
+      - name: 체크섬
+        run: cd build && shasum -a 256 *.zip > SHA256SUMS.txt
+
+      - name: 릴리스 생성
+        env: { GH_TOKEN: ${{ github.token }} }
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+            build/*.zip build/SHA256SUMS.txt
+
+      # Homebrew tap 저장소의 cask 를 자동으로 올린다.
+      # github.token 은 다른 저장소에 못 쓰므로 별도 PAT 가 필요하다.
+      - name: Homebrew cask 버전 올리기
+        if: ${{ secrets.TAP_TOKEN != '' }}
+        env: { GH_TOKEN: ${{ secrets.TAP_TOKEN }} }
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          SHA=$(shasum -a 256 "build/Unlockface-$V.zip" | cut -d' ' -f1)
+          gh api repos/wnsrud2002/homebrew-tap/dispatches \
+            -f event_type=bump \
+            -F "client_payload[version]=$V" \
+            -F "client_payload[sha256]=$SHA"
+
+-------------------------------------------------------------------------------
+
+■ 필요한 시크릿
+
+  자체서명 최소 구성:
+    MACOS_CERT_P12        (base64)
+    MACOS_CERT_PASSWORD
+    MACOS_SIGN_IDENTITY
+    KEYCHAIN_PASSWORD
+
+  공증까지 하려면:
+    NOTARY_APPLE_ID
+    NOTARY_TEAM_ID
+    NOTARY_PASSWORD       (앱 암호)
+
+  tap 자동 갱신:
+    TAP_TOKEN
+
+  .p12 만들기:
+    security export -k login.keychain -t identities -f pkcs12 \
+      -P '내보내기암호' -o cert.p12
+    base64 -i cert.p12 | pbcopy
+
+
+================================================================================
+3. 설치와 권한
+================================================================================
+
+!! 먼저 — 자동 권한 부여는 불가능하다 !!
+
+요청서의 "설치 스크립트가 TCC 권한을 자동 등록"은 MDM 없이는 원리적으로
+안 된다. tccutil은 reset만 있고 grant가 없다. TCC 데이터베이스는 SIP로
+보호되고, 쓰려면 그 자체로 전체 디스크 접근 권한이 필요하다(닭과 달걀).
+
+가능한 건 셋뿐이다:
+  1) 정확한 설정 패널로 딥링크를 열어 주기
+  2) 현재 권한 상태를 앱 안에서 확인해 체크리스트로 보여주기
+  3) 로그인 항목은 SMAppService로 실제 자동 등록
+
+설치 스크립트는 파일 배치와 격리 속성 제거까지만 하고, 권한 안내는 앱이
+하는 게 맞다 — SettingsView.swift가 이미 그 방향이다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+3.1 Homebrew Tap — 권장 경로
+────────────────────────────────────────────────────────────────────────────────
+
+Cask를 쓰면 설치·업데이트·완전삭제가 공짜로 따라온다. 특히 zap이 README의
+"완전히 지우고 싶다면" 섹션을 그대로 대체한다.
+
+--- homebrew-tap/Casks/unlockface.rb (별도 저장소 wnsrud2002/homebrew-tap) -----
+
+cask "unlockface" do
+  version "0.1.0"
+  sha256 "…"
+
+  url "https://github.com/wnsrud2002/Unlockface/releases/download/v#{version}/Unlockface-#{version}.zip"
+  name "Unlockface"
+  desc "얼굴·손바닥으로 macOS 잠금화면을 통과시키는 메뉴바 앱"
+  homepage "https://github.com/wnsrud2002/Unlockface"
+
+  depends_on macos: ">= :ventura"
+
+  app "Unlockface.app"
+
+  # 앱을 지워도 남는 것들. 키체인 항목은 zap 이 다루지 못해 스크립트로 지운다.
+  uninstall quit:   "tech.unlockface.app",
+            script: {
+              executable: "/usr/bin/security",
+              args: ["delete-generic-password", "-s", "tech.unlockface.app"],
+              must_succeed: false,
+            }
+
+  zap trash: [
+    "~/Library/Application Support/tech.unlockface.app",
+    "~/Library/Preferences/tech.unlockface.app.plist",
+    "~/Library/Caches/tech.unlockface.app",
+  ]
+
+  caveats <<~EOS
+    자체서명 앱입니다. Gatekeeper 격리를 피하려면:
+      brew install --cask --no-quarantine wnsrud2002/tap/unlockface
+
+    설치 후 앱을 열고 설정에서 카메라·접근성 권한을 허용해야 동작합니다.
+  EOS
+end
+
+-------------------------------------------------------------------------------
+
+?? 확인 필요 ??
+Homebrew는 기본적으로 다운로드한 앱에 격리 속성을 붙인다. 자체서명
+상태에서는 --no-quarantine이 필요하다. 이 플래그의 동작은 Homebrew 버전에
+따라 바뀐 적이 있으니, tap을 공개하기 전에 깨끗한 계정에서 한 번 실제로
+설치해 보고 caveats 문구를 확정할 것. 공증까지 하면 이 문단 전체가 없어진다.
+
+
+────────────────────────────────────────────────────────────────────────────────
+3.2 curl | bash — Homebrew 없는 사용자용
+────────────────────────────────────────────────────────────────────────────────
+
+이 경로에는 뜻밖의 장점이 있다: curl이 받은 파일에는 격리 속성이 안 붙는다.
+브라우저로 받아 우클릭하는 과정이 통째로 사라진다.
+
+--- scripts/install.sh (신규) --------------------------------------------------
+
+#!/bin/bash
+# curl -fsSL https://raw.githubusercontent.com/wnsrud2002/Unlockface/main/scripts/install.sh | bash
+set -euo pipefail
+
+REPO="wnsrud2002/Unlockface"
+APP="/Applications/Unlockface.app"
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+
+[ "$(uname -s)" = Darwin ] || { echo "macOS 전용입니다." >&2; exit 1; }
+[ "$(sw_vers -productVersion | cut -d. -f1)" -ge 13 ] \
+  || { echo "macOS 13 이상이 필요합니다." >&2; exit 1; }
+
+echo "[1/4] 최신 릴리스 확인"
+URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+      | grep -o '"browser_download_url": *"[^"]*\.zip"' | head -1 | cut -d'"' -f4)
+SUMS=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+      | grep -o '"browser_download_url": *"[^"]*SHA256SUMS.txt"' | head -1 | cut -d'"' -f4)
+[ -n "$URL" ] || { echo "릴리스를 찾지 못했습니다." >&2; exit 1; }
+
+echo "[2/4] 내려받기 + 체크섬 검증"
+curl -fsSL --retry 3 -o "$TMP/app.zip" "$URL"
+curl -fsSL -o "$TMP/SHA256SUMS.txt" "$SUMS"
+WANT=$(grep -o '^[0-9a-f]\{64\}' "$TMP/SHA256SUMS.txt" | head -1)
+GOT=$(shasum -a 256 "$TMP/app.zip" | cut -d' ' -f1)
+[ "$WANT" = "$GOT" ] || { echo "체크섬 불일치 — 설치를 중단합니다." >&2; exit 1; }
+
+echo "[3/4] /Applications 에 설치"
+# 실행 중이면 먼저 종료. 안 그러면 교체된 바이너리와 실행 중 프로세스가 어긋난다.
+osascript -e 'quit app id "tech.unlockface.app"' 2>/dev/null || true
+ditto -x -k "$TMP/app.zip" "$TMP/out"
+rm -rf "$APP"
+ditto "$TMP/out/Unlockface.app" "$APP"
+# curl 은 격리 속성을 안 붙이지만, 만약을 위해 한 번 더 지운다.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+echo "[4/4] 권한 안내"
+open "$APP"
+cat <<'EOS'
+
+설치가 끝났습니다. 남은 건 직접 허용해야 합니다
+(TCC 권한은 MDM 없이 스크립트로 부여할 수 없습니다):
+
+  1. 카메라      — 시스템 설정 > 개인정보 보호와 보안 > 카메라
+  2. 손쉬운 사용 — 시스템 설정 > 개인정보 보호와 보안 > 손쉬운 사용
+     (잠금화면에 비밀번호를 대신 입력하는 데 반드시 필요합니다)
+
+메뉴바 아이콘 > 설정… 에서 두 권한의 현재 상태를 확인하고
+해당 설정 패널을 바로 열 수 있습니다.
+EOS
+
+-------------------------------------------------------------------------------
+
+
+────────────────────────────────────────────────────────────────────────────────
+3.3 권한 딥링크와 앱 내 확인
+────────────────────────────────────────────────────────────────────────────────
+
+┌─ 권한 ───────────┬─ 앱에서 상태 확인 ──────────────┬─ 설정 딥링크 ───────────┐
+│ 카메라           │ AVCaptureDevice                 │ x-apple.systempreferen  │
+│                  │   .authorizationStatus(         │ ces:com.apple.settings. │
+│                  │      for: .video)               │ PrivacySecurity.        │
+│                  │                                 │ extension?Privacy_Camera│
+├──────────────────┼─────────────────────────────────┼─────────────────────────┤
+│ 손쉬운 사용      │ AXIsProcessTrusted()            │ …?Privacy_Accessibility │
+│ (Accessibility)  │ 또는 프롬프트 포함              │                         │
+│                  │ AXIsProcessTrustedWithOptions   │                         │
+├──────────────────┼─────────────────────────────────┼─────────────────────────┤
+│ 로그인 시 실행   │ SMAppService.mainApp.status     │ 딥링크 불필요 —         │
+│                  │                                 │ register()로 직접 등록  │
+└──────────────────┴─────────────────────────────────┴─────────────────────────┘
+
+?? 확인 필요 ??
+딥링크 URL 스킴은 macOS 버전마다 pane 식별자가 바뀐다. 구형
+com.apple.preference.security?Privacy_Camera 가 아직 동작하는 버전도 있다.
+현재 쓰는 macOS 26.5에서 실제로 열리는지 확인하고, 실패 시
+x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension
+(하위 항목 없이)로 폴백하는 2단 처리를 넣을 것.
+
+
+================================================================================
+4. 저장소 구조와 README
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+4.1 디렉토리 트리
+────────────────────────────────────────────────────────────────────────────────
+
+Unlockface/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                   ← 신규: 빌드 + 테스트
+│       └── release.yml              ← 신규: 태그 → 서명 → 공증 → 릴리스
+├── Sources/
+│   ├── UnlockKit/                   ← 신규 라이브러리 타겟(테스트 가능)
+│   │   ├── UnlockService.swift      # 이동, 수정 없음
+│   │   ├── LoginPasswordStore.swift # 이동
+│   │   ├── KeychainStore.swift      # 이동
+│   │   ├── ScreenLockMonitor.swift  # 이동
+│   │   ├── CameraController.swift   # 이동
+│   │   ├── DiagnosticLog.swift      # 이동
+│   │   ├── Geometry.swift           # FaceAligner 의 유사변환을 추출
+│   │   ├── VectorMath.swift         # FaceEmbedder 의 벡터 연산 3개
+│   │   └── BiometricFactor.swift    # 얼굴/손바닥 공통 프로토콜
+│   ├── Unlockface/                  # 얼굴 전용 6개 파일만 남음
+│   ├── Unlockpalm/                  ← 신규
+│   │   ├── PalmDetector.swift       # Vision HandPose + 손바닥/손등 판별
+│   │   ├── PalmAligner.swift        # 5점 → 정준 프레임 → ROI
+│   │   ├── PalmPreprocessor.swift   # vImage CLAHE
+│   │   ├── PalmMatcher.swift        # CompCode → v0.2 CoreML
+│   │   ├── PalmLiveness.swift       # 비강체 잔차 + 챌린지
+│   │   └── PalmProfileStore.swift   # 암호화 프로필(FaceProfileStore 대칭)
+│   └── UnlockApp/                   # @main, 메뉴바, 설정 UI
+├── Tests/                           ← 신규
+│   └── UnlockKitTests/
+│       ├── GeometryTests.swift
+│       ├── EmbedderGoldenTests.swift
+│       └── PalmCodeTests.swift
+├── Models/                          # .mlpackage — 50MB 넘으면 Releases 로
+├── models/
+│   └── manifest.json                ← 신규: url + sha256
+├── scripts/
+│   ├── build.sh                     # 기존
+│   ├── package.sh                   # SIGN_IDENTITY 환경변수 지원 추가
+│   ├── setup-signing.sh             # 기존
+│   ├── fetch-models.sh              ← 신규
+│   └── install.sh                   ← 신규: curl | bash
+├── tools/                           # 모델 변환(빌드 시점 전용, 런타임 의존성 아님)
+│   ├── convert_sface.py
+│   ├── convert_antispoof.py
+│   └── train_palm.py                ← v0.2
+├── Resources/
+│   ├── Info.plist                   # 버전은 여기가 단일 출처(release.yml 이 검사)
+│   └── Unlockface.entitlements
+├── Package.swift                    # 타겟 3개 + 테스트 타겟
+├── README.md
+├── ENGINEERING.md                   # 손바닥 Phase 를 이어서 기록
+├── THIRD_PARTY_LICENSES.md
+└── LICENSE
+
+별도 저장소가 하나 필요하다: wnsrud2002/homebrew-tap
+  → Casks/unlockface.rb 와 repository_dispatch 를 받아 버전을 올리는
+    워크플로 하나.
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.2 README 골격 (변경 요약)
+────────────────────────────────────────────────────────────────────────────────
+
+지금 README는 구조가 이미 좋다(경고를 숨기지 않고, 보안 모델을 앞에 놓고,
+한계를 명시). 손바닥을 얹으면서 바꿀 지점만:
+
+# Unlockface
+
+배지 · 한 줄 소개
+"생체인증이 아니라 자동화" 경고            ← 그대로. README 의 핵심 자산.
+
+## 기능
++ 손바닥 인식으로 잠금 해제 (Vision HandPose + CompCode)
++ 얼굴·손바닥 둘 다 통과해야 해제하는 2요소 모드
+
+## 요구 사항                                ← 그대로
+
+## 설치
++ ### Homebrew (권장)
++   brew install --cask --no-quarantine wnsrud2002/tap/unlockface
++ ### 설치 스크립트
++   curl -fsSL https://raw.githubusercontent.com/…/install.sh | bash
+  ### 직접 내려받기                          ← 기존 우클릭 안내를 여기로 강등
+  ### 소스에서 빌드                          ← fetch-models.sh 한 줄 추가
+
+## 처음 설정하기
++ 손바닥 등록: 거리·각도 안내, "연습 모드" 설명
++ ⚠ 잠금화면에는 안내 화면을 띄울 수 없으므로 소리로 피드백한다는 설명
+
+## 문제 해결                                 ← 신규 섹션
++ 손을 들어도 반응이 없음 → 거리 25~40cm, 손바닥이 카메라를 향하는지
++ 업데이트 후 카메라 권한을 다시 물어봄 → 서명 식별자 변경, 이슈로 보고
++ "손상되었거나 확인할 수 없음" → xattr -dr com.apple.quarantine
++ 인식은 되는데 잠금이 안 풀림 → 손쉬운 사용 권한, 비밀번호 재저장
+
+## 보안 모델과 한계                          ← 손바닥 실측치를 같은 형식으로 추가
++ 손바닥 임계값 근거: 타인 세트·최고 유사도·분리 여유
++ ⚠ 손바닥 Liveness 는 무엇을 검증했고 무엇을 안 했는지 명시
+
+## 라이선스
++ 손바닥 모델/데이터셋 출처와 약관을 THIRD_PARTY_LICENSES.md 에 추가
+
+
+================================================================================
+5. 실행 순서
+================================================================================
+
+비전 파이프라인부터 시작하고 싶어지지만, 인프라를 먼저 까는 게 총 비용이
+싸다 — 손바닥 임계값을 실측하려면 어차피 테스트 하네스가 필요하고,
+그 하네스는 UnlockKit이 있어야 만들어진다.
+
+  01  UnlockKit 추출                                              반나절
+      공용 8개 파일 이동, Package.swift에 라이브러리 타겟 +
+      테스트 타겟 추가. 동작은 하나도 안 바뀌어야 함.
+
+  02  ci.yml + 테스트 3개                                         반나절
+      similarityTransform, 임베더 골든, 유니버설 링크 확인.
+
+  03  release.yml + 고정 서명 인증서                              하루
+      지금 v0.1.1 태그로 한 번 돌려서 릴리스가 실제로 나오는지
+      확인. 손바닥 코드 한 줄 쓰기 전에.
+
+  04  Homebrew tap + install.sh                                   반나절
+      깨끗한 사용자 계정에서 실제 설치 리허설. caveats 문구 확정.
+
+  05  PalmDetector + PalmAligner                                  2~3일
+      디버그 창에 정렬된 ROI와 정준 5점 마커를 겹쳐 띄우고
+      '눈으로' 확인. 손바닥/손등 부호 실측 확정.
+
+  06  게이트 임계값 3개 실측                                      하루
+      잔차 / ROI 원본 픽셀 / 선명도.
+      표로 남기고 ENGINEERING.md에 기록.
+
+  07  PalmMatcher (CompCode)                                      2~3일
+      Gabor 뱅크, wrap-around 처리, ±3px 이동 탐색.
+
+  08  타인 세트로 임계값 확정                                     2일
+      Tongji/IITD를 '인증과 같은 코드 경로'로 채점.
+      분리 여유가 안 나오면 07로 되돌아감(이 시점에 알아야 함).
+
+  09  PalmLiveness                                                2~3일
+      비강체 잔차 + 챌린지. 인쇄물·화면 재생 공격을 직접 만들어
+      라벨 데이터로 검증.
+
+  10  UI 통합 + 연습 모드                                         2~3일
+      등록 플로우, 소리 피드백, 2요소 모드 토글.
+
+  11  v0.2.0 태그                                                 —
+      03에서 이미 검증된 파이프라인이 자동으로 릴리스를 만든다.
+
+
+■ 가장 먼저 확인할 것
+
+01~04에 이틀을 쓰기 전에, Vision HandPose가 당신 맥북 카메라·조명에서
+손바닥 21점을 안정적으로 잡는지부터 30분 안에 확인할 것.
+DebugView.swift에 VNDetectHumanHandPoseRequest를 붙이고 랜드마크 신뢰도를
+찍어 보는 것으로 충분하다. 여기가 안 되면 아래 로드맵 전체가 의미가 없고,
+이 검증은 다른 어떤 작업에도 의존하지 않는다.
+
+
+================================================================================
+미확정 항목 (직접 실측해서 채울 것)
+================================================================================
+
+  [ ] PalmDetector.palmFacingSign — 손바닥/손등 판별 외적 부호.
+      전면 카메라 미러링 여부에 따라 뒤집힌다.
+
+  [ ] macOS 26.5의 TCC 설정 딥링크 URL 스킴 — 실제로 열리는지.
+
+  [ ] PalmAligner.canonical192 — 등록 샘플 20장의 평균 잔차 최소화로 재추정.
+
+  [ ] PalmAligner.minSourcePixels — 거리별 ROI 픽셀 수 vs 본인 점수 절벽.
+
+  [ ] 정렬 잔차 임계값 — 기울기 각도별 유사도 붕괴 지점.
+
+  [ ] 선명도 임계값 — 128×128 손바닥 ROI 기준으로 재측정.
+
+  [ ] 손바닥 인증 임계값 — 타인 세트 채점 후 확정.
+
+  [ ] Homebrew --no-quarantine 동작 — 깨끗한 계정에서 설치 리허설.
+
+  [ ] 팜프린트 데이터셋 약관 원문 — Tongji / IITD / 11k Hands.
+      채점 사용과 파생 모델 배포는 완전히 다른 얘기다.
+
+================================================================================
