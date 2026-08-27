@@ -148,15 +148,23 @@ final class UnlockService: ObservableObject {
     func feedPalm(score: Float?) {
         guard palmUnlockEnabled, !injecting, case .waiting = state else { return }
         guard ScreenLockMonitor.shared.isLocked else { return }
-        guard let score else { palmConsecutive = 0; return }
+        guard let score else {
+            DiagnosticLog.write("unlock: 손바닥 채점 실패(유효 픽셀 부족 등) — 연속 리셋")
+            palmConsecutive = 0
+            return
+        }
         lastPalmScore = score
 
         guard score >= PalmConfig.matchThreshold else {
+            DiagnosticLog.write(String(format: "unlock: 손바닥 채점 score=%.4f < 임계 %.2f — 연속 리셋",
+                                       score, PalmConfig.matchThreshold))
             palmConsecutive = 0
             return
         }
 
         palmConsecutive += 1
+        DiagnosticLog.write(String(format: "unlock: 손바닥 채점 score=%.4f 통과 (연속 %d/%d)",
+                                   score, palmConsecutive, PalmConfig.requiredConsecutiveFrames))
         guard palmConsecutive >= PalmConfig.requiredConsecutiveFrames else { return }
 
         state = .matched(score)
