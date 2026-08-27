@@ -25,6 +25,13 @@ public struct PalmCode: Equatable {
     let bits: [UInt8]
     let mask: [Bool]
     let size: Int
+
+    /// 진단용 — mask가 true인 픽셀 비율. 이게 너무 낮으면
+    /// PalmConfig.minGaborResponseMagnitude가 실제 이미지에 비해 너무 빡빡한 것이다.
+    public var validRatio: Float {
+        guard !mask.isEmpty else { return 0 }
+        return Float(mask.filter { $0 }.count) / Float(mask.count)
+    }
 }
 
 public enum PalmMatcher {
@@ -104,17 +111,21 @@ public enum PalmMatcher {
     // MARK: - 매칭
 
     /// 정규화 해밍 유사도(1에 가까울수록 같은 손). 정렬 오차 흡수를 위해 ±3px 이동 탐색.
-    public static func score(_ a: PalmCode, _ b: PalmCode) -> Float {
-        guard a.size == b.size else { return 0 }
-        var best: Float = 1.0
+    ///
+    /// nil은 "다른 손"이 아니라 "비교할 픽셀이 부족해서 판단 불가"다 — 0점과
+    /// 절대 혼동하면 안 된다. mask 게이트(minGaborResponseMagnitude)가 실제
+    /// 이미지에 비해 너무 빡빡하면 항상 nil이 나온다(PalmCode.validRatio로 확인).
+    public static func score(_ a: PalmCode, _ b: PalmCode) -> Float? {
+        guard a.size == b.size else { return nil }
+        var best: Float?
         for dy in -3...3 {
             for dx in -3...3 {
                 if let d = normalizedHammingDistance(a, b, dx: dx, dy: dy) {
-                    best = min(best, d)
+                    best = min(best ?? d, d)
                 }
             }
         }
-        return 1 - best
+        return best.map { 1 - $0 }
     }
 
     private static func normalizedHammingDistance(_ a: PalmCode, _ b: PalmCode, dx: Int, dy: Int) -> Float? {
@@ -136,7 +147,9 @@ public enum PalmMatcher {
             }
         }
         // 유효 픽셀이 너무 적으면(정렬이 완전히 어긋났거나 손이 잘림) 이 이동량은 신뢰하지 않는다.
-        guard validCount >= (size * size) / 4 else { return nil }
+        // 손금 선은 원래 ROI 면적의 일부만 차지하므로 전체 대비 비율이 아니라
+        // 절대 개수로 본다 — 비율 기준(예: 25%)은 애초에 못 채우는 문턱이었다.
+        guard validCount >= PalmConfig.minValidComparisonPixels else { return nil }
         return total / Float(validCount)
     }
 

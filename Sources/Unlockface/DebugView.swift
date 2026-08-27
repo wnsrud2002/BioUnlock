@@ -18,7 +18,11 @@ struct DebugView: View {
     /// 아직 없다. "이 손금 방식이 사람을 구분할 수 있는가"만 여기서 확인한다.
     @State private var registeredPalmCode: PalmCode?
     @State private var registeredPalmThumb: CGImage?
+    @State private var registeredValidRatio: Float?
     @State private var lastMatchScore: Float?
+    @State private var lastCompareValidRatio: Float?
+    /// 비교를 시도했는지(점수가 nil이어도 "아직 안 눌러봄"과 "눌렀는데 실패"를 구분하려고).
+    @State private var didAttemptCompare = false
 
     private var camera: CameraController { app.camera }
 
@@ -140,12 +144,31 @@ struct DebugView: View {
             row("ROI 원본 픽셀", String(format: "%.0f px", p.sourcePixels))
             chip("ROI 픽셀 게이트", p.passesSourcePixelGate)
 
+            // Gabor 응답 임계값이 실측 전이라 처음엔 거의 확실히 안 맞는다.
+            // 재빌드 없이 여기서 바로 조정해가며 등록/비교를 반복해볼 수 있게 했다.
+            HStack(spacing: 6) {
+                Text("응답 임계값 \(String(format: "%.0f", PalmConfig.minGaborResponseMagnitude))")
+                    .font(.system(size: 10))
+                Button("-5") {
+                    PalmConfig.minGaborResponseMagnitude = max(0, PalmConfig.minGaborResponseMagnitude - 5)
+                }.font(.system(size: 10))
+                Button("+5") { PalmConfig.minGaborResponseMagnitude += 5 }.font(.system(size: 10))
+            }
+
             HStack(spacing: 6) {
                 Button("이 손 등록") { registerPalm(p) }.font(.system(size: 10))
                 Button("지금 비교") { comparePalm(p) }
                     .font(.system(size: 10))
                     .disabled(registeredPalmCode == nil)
             }
+
+            if let ratio = registeredValidRatio {
+                row("등록 코드 유효 픽셀", String(format: "%.1f%%", ratio * 100))
+            }
+            if let ratio = lastCompareValidRatio {
+                row("비교 코드 유효 픽셀", String(format: "%.1f%%", ratio * 100))
+            }
+
             if let score = lastMatchScore {
                 row("매칭 점수", String(format: "%.4f", score))
                 HStack(spacing: 6) {
@@ -154,6 +177,12 @@ struct DebugView: View {
                     Text(String(format: "임계 %.2f(미실측 추정치)", PalmConfig.matchThreshold))
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
+            } else if didAttemptCompare {
+                // 0점이 아니라 이 문구가 떠야 정상이다 — 0점은 "다른 손"으로
+                // 오해하기 딱 좋다. 위 유효 픽셀 비율이 낮으면 "응답 임계값"을
+                // -5로 몇 번 눌러 낮추고 다시 등록·비교해볼 것.
+                Text("비교 불가 — 겹치는 유효 픽셀 부족. 응답 임계값을 낮춰보세요")
+                    .font(.system(size: 11)).foregroundStyle(.orange)
             }
         } else {
             empty("손 없음 — 손바닥을 카메라 쪽으로 들어보세요")
@@ -182,11 +211,16 @@ struct DebugView: View {
         guard let code = encodePalm(p) else { return }
         registeredPalmCode = code
         registeredPalmThumb = p.roi
+        registeredValidRatio = code.validRatio
         lastMatchScore = nil
+        lastCompareValidRatio = nil
+        didAttemptCompare = false
     }
 
     private func comparePalm(_ p: AlignedPalmResult) {
         guard let registeredPalmCode, let code = encodePalm(p) else { return }
+        didAttemptCompare = true
+        lastCompareValidRatio = code.validRatio
         lastMatchScore = PalmMatcher.score(registeredPalmCode, code)
     }
 

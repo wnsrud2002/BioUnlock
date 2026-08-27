@@ -26,7 +26,13 @@ public enum PalmConfig {
 
     /// CompCode Gabor 응답 크기 하한 — 이보다 약하면 그 픽셀은 매칭에서 뺀다
     /// (평평한 배경, 그림자 경계 등). 커널 스케일에 종속적인 값이라 실측 전 추정치다.
-    public static var minGaborResponseMagnitude: Float = 50
+    /// 처음에 50으로 뒀더니 실제 웹캠 ROI에서 거의 모든 픽셀이 걸러져 늘 비교
+    /// 불가가 나왔다 — 훨씬 낮춰서 시작하고, DebugView의 +/- 버튼으로 실측 조정한다.
+    public static var minGaborResponseMagnitude: Float = 10
+
+    /// 두 코드를 비교할 때 겹쳐야 하는 최소 유효 픽셀 '개수'(전체 대비 비율 아님).
+    /// 손금 선은 ROI 면적의 일부만 차지하므로 비율로 잡으면 항상 문턱을 못 넘는다.
+    public static var minValidComparisonPixels: Int = 150
 
     /// 손바닥 인증 임계값. 얼굴의 unlockIdentityThreshold와 같은 역할 —
     /// 타인 데이터셋 채점 전까지는 순전히 추정치다(로드맵 08번에서 확정).
