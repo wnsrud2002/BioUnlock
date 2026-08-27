@@ -5,15 +5,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-debug}"
-APP="$ROOT/build/Unlockface.app"
+APP="$ROOT/build/BioUnlock.app"
 
 cd "$ROOT"
 swift build -c "$CONFIG"
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/Unlockface"
+BIN="$(swift build -c "$CONFIG" --show-bin-path)/BioUnlock"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/Unlockface"
+cp "$BIN" "$APP/Contents/MacOS/BioUnlock"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # CoreML 모델은 미리 컴파일해서 넣는다. 런타임 컴파일은 첫 인증을 몇 초 지연시킨다.
@@ -32,7 +32,7 @@ if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
 fi
 
 codesign --force --sign "$IDENTITY" \
-    --entitlements "$ROOT/Resources/Unlockface.entitlements" \
+    --entitlements "$ROOT/Resources/BioUnlock.entitlements" \
     "$APP" >/dev/null
 
 echo "built: $APP"

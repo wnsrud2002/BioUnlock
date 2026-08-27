@@ -1,6 +1,6 @@
 //
 //  LoginPasswordStore.swift
-//  Unlockface
+//  BioUnlock
 //
 //  macOS 로그인 비밀번호 보관.
 //
@@ -22,8 +22,8 @@ import OpenDirectory
 
 public enum LoginPasswordStore {
 
-    private static let account = "UnlockfaceLoginPassword"
-    private static let keyAccount = "UnlockfacePasswordKey"
+    private static let account = "BioUnlockLoginPassword"
+    private static let keyAccount = "BioUnlockPasswordKey"
 
     /// 데이터를 읽지 않고 존재만 확인한다(메인 스레드 안전).
     public static var isSet: Bool { KeychainStore.exists(account: account) }

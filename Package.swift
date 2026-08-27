@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "Unlockface",
+    name: "BioUnlock",
     platforms: [.macOS(.v13)],
     targets: [
         .target(
             name: "UnlockKit",
             path: "Sources/UnlockKit",
-            // Unlockface와 동일한 이유(ScreenLockMonitor 등 델리게이트/타이머 콜백)로 v5 유지
+            // BioUnlock와 동일한 이유(ScreenLockMonitor 등 델리게이트/타이머 콜백)로 v5 유지
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
-            name: "Unlockface",
+            name: "BioUnlock",
             dependencies: ["UnlockKit", "Unlockpalm"],
-            path: "Sources/Unlockface",
+            path: "Sources/BioUnlock",
             // Phase 1은 AVFoundation 델리게이트 콜백이 많아 v6 엄격 동시성 대신 v5 모드 사용
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

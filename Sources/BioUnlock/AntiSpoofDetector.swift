@@ -1,6 +1,6 @@
 //
 //  AntiSpoofDetector.swift
-//  Unlockface
+//  BioUnlock
 //
 //  사진·화면 재생 공격 탐지 (MiniFASNet 앙상블).
 //
@@ -247,7 +247,7 @@ final class AntiSpoofDetector {
     /// 잘린 결과가 아니라 자르기 '전' 상태가 필요하다.
     private func dumpFrame(image: CIImage, faceBox: CGRect, tag: String) {
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Unlockface_Spoof")
+            .appendingPathComponent("BioUnlock_Spoof")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let cg = ciContext.createCGImage(image, from: image.extent),
               let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
@@ -268,7 +268,7 @@ final class AntiSpoofDetector {
                                   provider: provider, decode: nil, shouldInterpolate: false,
                                   intent: .defaultIntent) else { return }
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Unlockface_Spoof")
+            .appendingPathComponent("BioUnlock_Spoof")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
         else { return }

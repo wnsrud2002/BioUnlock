@@ -1,6 +1,6 @@
 //
 //  EnrollmentSession.swift
-//  Unlockface
+//  BioUnlock
 //
 //  포즈 버킷별로 샘플을 모아 프로필을 만드는 등록 절차.
 //

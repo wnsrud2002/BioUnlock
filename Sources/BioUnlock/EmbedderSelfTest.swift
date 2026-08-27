@@ -1,6 +1,6 @@
 //
 //  EmbedderSelfTest.swift
-//  Unlockface
+//  BioUnlock
 //
 //  Swift 전처리가 Python 기준 구현과 같은 임베딩을 내는지 확인하는 자가진단.
 //

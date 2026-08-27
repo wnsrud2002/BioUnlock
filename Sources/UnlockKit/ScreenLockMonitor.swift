@@ -1,6 +1,6 @@
 //
 //  ScreenLockMonitor.swift
-//  Unlockface
+//  BioUnlock
 //
 //  화면 잠금 상태 감시.
 //

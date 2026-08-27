@@ -1,6 +1,6 @@
 //
 //  DiagnosticLog.swift
-//  Unlockface
+//  BioUnlock
 //
 //  통합 로그는 필터가 걸려 누락되는 경우가 있어 파일로 직접 남긴다.
 //
@@ -12,10 +12,10 @@ public enum DiagnosticLog {
         let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
             .first!.appendingPathComponent("Logs")
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        return logs.appendingPathComponent("Unlockface.log")
+        return logs.appendingPathComponent("BioUnlock.log")
     }()
 
-    private static let queue = DispatchQueue(label: "tech.unlockface.log", qos: .utility)
+    private static let queue = DispatchQueue(label: "tech.biounlock.log", qos: .utility)
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"

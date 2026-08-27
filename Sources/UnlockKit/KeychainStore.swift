@@ -1,6 +1,6 @@
 //
 //  KeychainStore.swift
-//  Unlockface
+//  BioUnlock
 //
 //  마스터 키 보관. 얼굴 임베딩 파일은 이 키로 암호화되고, 키 자체는 파일과
 //  분리해 키체인에 둔다. 파일만 복사해 가서는 복호화할 수 없어야 한다.
@@ -23,7 +23,7 @@ public enum KeychainStore {
     }
 
     private static var service: String {
-        Bundle.main.bundleIdentifier ?? "tech.unlockface.app"
+        Bundle.main.bundleIdentifier ?? "tech.biounlock.app"
     }
 
     private static func query(account: String) -> [String: Any] {

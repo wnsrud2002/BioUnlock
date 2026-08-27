@@ -1,6 +1,6 @@
 //
 //  SettingsView.swift
-//  Unlockface
+//  BioUnlock
 //
 
 import SwiftUI

@@ -1,6 +1,6 @@
 //
 //  UnlockService.swift
-//  Unlockface
+//  BioUnlock
 //
 //  잠금 감지 → 얼굴 인식 → 비밀번호 주입.
 //
@@ -223,7 +223,7 @@ final class UnlockService: ObservableObject {
     /// 디스플레이가 꺼져 있으면 키 입력이 잠금화면에 닿지 않는다.
     private func wakeDisplay() {
         var assertion: IOPMAssertionID = 0
-        IOPMAssertionDeclareUserActivity("Unlockface face match" as CFString,
+        IOPMAssertionDeclareUserActivity("BioUnlock face match" as CFString,
                                          kIOPMUserActiveLocal,
                                          &assertion)
     }

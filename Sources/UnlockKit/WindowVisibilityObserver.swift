@@ -1,6 +1,6 @@
 //
 //  WindowVisibilityObserver.swift
-//  Unlockface
+//  BioUnlock
 //
 //  SwiftUI 의 onAppear/onDisappear 는 창을 최소화해도 불리지 않는다 — 창만
 //  화면에서 사라질 뿐 뷰는 여전히 마운트돼 있다. 그래서 설정/디버그 창을

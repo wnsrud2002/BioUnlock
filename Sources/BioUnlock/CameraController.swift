@@ -1,6 +1,6 @@
 //
 //  CameraController.swift
-//  Unlockface
+//  BioUnlock
 //
 //  Phase 1: 카메라 캡처 + Vision 얼굴 검출 루프.
 //
@@ -74,8 +74,8 @@ final class CameraController: NSObject, ObservableObject {
     private let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
 
-    private let sessionQueue = DispatchQueue(label: "tech.unlockface.session", qos: .userInteractive)
-    private let visionQueue = DispatchQueue(label: "tech.unlockface.vision", qos: .userInitiated)
+    private let sessionQueue = DispatchQueue(label: "tech.biounlock.session", qos: .userInteractive)
+    private let visionQueue = DispatchQueue(label: "tech.biounlock.vision", qos: .userInitiated)
 
     private let ciContext = CIContext(options: [
         .useSoftwareRenderer: false,
@@ -308,7 +308,7 @@ final class CameraController: NSObject, ObservableObject {
             }
             handObservation = handPoseRequest.results?.first
         } catch {
-            NSLog("[Unlockface] Vision 실패: \(error.localizedDescription)")
+            NSLog("[BioUnlock] Vision 실패: \(error.localizedDescription)")
         }
 
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
@@ -498,14 +498,14 @@ private extension CameraController {
 
     static func dump(result: AlignedFaceResult, tag: String) {
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Unlockface_Aligned")
+            .appendingPathComponent("BioUnlock_Aligned")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for (image, name) in [(result.raw, "raw"), (result.processed, "clahe")] {
             let rep = NSBitmapImageRep(cgImage: image)
             guard let data = rep.representation(using: .png, properties: [:]) else { continue }
             try? data.write(to: dir.appendingPathComponent("\(tag)_\(name).png"))
         }
-        DiagnosticLog.write("dump \(tag) → Downloads/Unlockface_Aligned")
+        DiagnosticLog.write("dump \(tag) → Downloads/BioUnlock_Aligned")
     }
 
     static func makeCGImage(rgba: [UInt8], size: Int) -> CGImage? {

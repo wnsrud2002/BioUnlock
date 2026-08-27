@@ -1,6 +1,6 @@
 //
 //  Config.swift
-//  Unlockface
+//  BioUnlock
 //
 //  튜닝 파라미터는 전부 여기에만 둔다. 코드 곳곳에 하드코딩하면 나중에 못 고친다.
 //
@@ -207,6 +207,6 @@ enum FaceIDConfig {
     /// 정렬 결과를 PNG 로 떨굴 프레임 번호.
     static var debugCaptureFrames: Set<Int> = [90, 150, 210]
 
-    /// 자세 각도 원본값을 ~/Library/Logs/Unlockface.log 에 남긴다. 튜닝 끝나면 끌 것.
+    /// 자세 각도 원본값을 ~/Library/Logs/BioUnlock.log 에 남긴다. 튜닝 끝나면 끌 것.
     static var enablePoseLogging: Bool = true
 }

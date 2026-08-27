@@ -1,6 +1,6 @@
 //
 //  DebugView.swift
-//  Unlockface
+//  BioUnlock
 //
 //  개발용 계측 창. 파이프라인 각 단계의 값을 실시간으로 본다.
 //  등록·설정은 설정 창에 있고, 여기는 진단 전용이다.
@@ -344,7 +344,7 @@ struct DebugView: View {
 
     private func saveAligned(_ a: AlignedFaceResult) {
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Unlockface_Aligned")
+            .appendingPathComponent("BioUnlock_Aligned")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let stamp = Int(Date().timeIntervalSince1970 * 1000)
         for (image, name) in [(a.raw, "raw"), (a.processed, "clahe")] {
@@ -352,6 +352,6 @@ struct DebugView: View {
             else { continue }
             try? data.write(to: dir.appendingPathComponent("\(stamp)_\(name).png"))
         }
-        savedNote = "저장: ~/Downloads/Unlockface_Aligned/\(stamp)_*.png"
+        savedNote = "저장: ~/Downloads/BioUnlock_Aligned/\(stamp)_*.png"
     }
 }

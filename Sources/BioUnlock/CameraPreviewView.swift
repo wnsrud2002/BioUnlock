@@ -1,6 +1,6 @@
 //
 //  CameraPreviewView.swift
-//  Unlockface
+//  BioUnlock
 //
 //  프리뷰 + 검출 오버레이. 등록 창과 디버그 창이 함께 쓴다.
 //

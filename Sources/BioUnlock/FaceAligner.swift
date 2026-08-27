@@ -1,6 +1,6 @@
 //
 //  FaceAligner.swift
-//  Unlockface
+//  BioUnlock
 //
 //  5점 랜드마크를 ArcFace 표준 112x112 배치로 맞추는 유사변환(similarity transform).
 //

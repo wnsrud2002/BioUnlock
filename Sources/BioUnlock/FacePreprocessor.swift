@@ -1,6 +1,6 @@
 //
 //  FacePreprocessor.swift
-//  Unlockface
+//  BioUnlock
 //
 //  정렬된 얼굴 버퍼(RGBA8)에 적용하는 전처리. 순서가 정해져 있다:
 //    1. 선명도 게이트  — 흐린 프레임은 여기서 버린다

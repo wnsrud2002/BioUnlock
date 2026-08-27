@@ -1,6 +1,6 @@
 //
 //  FaceEmbedder.swift
-//  Unlockface
+//  BioUnlock
 //
 //  정렬된 112x112 RGBA 버퍼 → 128차원 얼굴 임베딩.
 //

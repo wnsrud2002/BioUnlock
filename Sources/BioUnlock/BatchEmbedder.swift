@@ -1,6 +1,6 @@
 //
 //  BatchEmbedder.swift
-//  Unlockface
+//  BioUnlock
 //
 //  폴더 안의 이미지를 앱의 '실제' 파이프라인(Vision 검출 → 5점 → 정렬 → 임베딩)에
 //  그대로 태워 임베딩을 뽑는 일괄 모드.
@@ -8,7 +8,7 @@
 //  타인 점수 분포(오인식률)를 재려고 만들었다. 별도 구현으로 재면 그 구현의
 //  오차를 재는 꼴이 되므로, 반드시 인증에 쓰이는 코드와 같은 경로여야 한다.
 //
-//  사용: Unlockface.app/Contents/MacOS/Unlockface --batch <입력폴더> <출력.json>
+//  사용: BioUnlock.app/Contents/MacOS/BioUnlock --batch <입력폴더> <출력.json>
 //
 
 import Foundation

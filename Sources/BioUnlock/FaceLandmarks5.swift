@@ -1,6 +1,6 @@
 //
 //  FaceLandmarks5.swift
-//  Unlockface
+//  BioUnlock
 //
 //  Vision 랜드마크에서 ArcFace 정렬용 5점을 뽑고, 거기서 머리 자세를 직접 계산한다.
 //

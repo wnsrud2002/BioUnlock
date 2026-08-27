@@ -5,9 +5,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/build/Unlockface.app"
+APP="$ROOT/build/BioUnlock.app"
 VERSION="$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$ROOT/Resources/Info.plist")"
-ZIP="$ROOT/build/Unlockface-$VERSION.zip"
+ZIP="$ROOT/build/BioUnlock-$VERSION.zip"
 
 cd "$ROOT"
 
@@ -18,13 +18,13 @@ echo "[2/5] 유니버설 바이너리로 합치기"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create \
-    ".build/apple/Products/Release/Unlockface" \
-    -output "$APP/Contents/MacOS/Unlockface" 2>/dev/null \
+    ".build/apple/Products/Release/BioUnlock" \
+    -output "$APP/Contents/MacOS/BioUnlock" 2>/dev/null \
 || lipo -create \
-    ".build/arm64-apple-macosx/release/Unlockface" \
-    ".build/x86_64-apple-macosx/release/Unlockface" \
-    -output "$APP/Contents/MacOS/Unlockface"
-file "$APP/Contents/MacOS/Unlockface"
+    ".build/arm64-apple-macosx/release/BioUnlock" \
+    ".build/x86_64-apple-macosx/release/BioUnlock" \
+    -output "$APP/Contents/MacOS/BioUnlock"
+file "$APP/Contents/MacOS/BioUnlock"
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
@@ -41,7 +41,7 @@ if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
     echo "경고: '$IDENTITY' 인증서 없음 — ad-hoc 서명 사용. ./scripts/setup-signing.sh 실행 권장" >&2
 fi
 codesign --force --sign "$IDENTITY" \
-    --entitlements "$ROOT/Resources/Unlockface.entitlements" \
+    --entitlements "$ROOT/Resources/BioUnlock.entitlements" \
     "$APP"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature"
 

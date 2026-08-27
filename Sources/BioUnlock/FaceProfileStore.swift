@@ -1,6 +1,6 @@
 //
 //  FaceProfileStore.swift
-//  Unlockface
+//  BioUnlock
 //
 //  등록된 얼굴 프로필의 저장·대조.
 //
@@ -50,19 +50,19 @@ final class FaceProfileStore {
 
     /// 무거운 작업(키체인 복호화, 파일 I/O)을 돌리는 큐.
     /// 키체인 읽기는 승인 대화상자를 띄울 수 있어 메인 스레드에서 하면 앱이 멈춘다.
-    private let ioQueue = DispatchQueue(label: "tech.unlockface.profiles.io", qos: .userInitiated)
+    private let ioQueue = DispatchQueue(label: "tech.biounlock.profiles.io", qos: .userInitiated)
 
     /// 로드·등록·삭제로 프로필이 바뀌면 메인 스레드에서 불린다.
     var onProfilesChanged: (() -> Void)?
 
     private(set) var isLoaded = false
 
-    private let keyAccount = "UnlockfaceMasterKey"
+    private let keyAccount = "BioUnlockMasterKey"
     private let fileURL: URL
 
     private init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = support.appendingPathComponent(Bundle.main.bundleIdentifier ?? "tech.unlockface.app")
+        let dir = support.appendingPathComponent(Bundle.main.bundleIdentifier ?? "tech.biounlock.app")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("faceprints.encrypted")
         // 초기화에서 동기 로드를 하면 키체인이 프롬프트를 띄우려다 메인 스레드가 멈춘다.

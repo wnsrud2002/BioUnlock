@@ -1,6 +1,6 @@
 //
 //  MenuBarView.swift
-//  Unlockface
+//  BioUnlock
 //
 //  메뉴바 팝오버. 상태 확인과 켜고 끄기만 하고, 나머지는 설정 창으로 보낸다.
 //
@@ -17,7 +17,7 @@ struct MenuBarView: View {
             HStack(spacing: 6) {
                 Image(systemName: MenuBarIcon.name(for: app))
                     .foregroundStyle(app.unlock.isEnabled ? Color.accentColor : .secondary)
-                Text("Unlockface").font(.system(size: 13, weight: .semibold))
+                Text("BioUnlock").font(.system(size: 13, weight: .semibold))
                 Spacer()
             }
 

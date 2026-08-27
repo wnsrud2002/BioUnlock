@@ -1,6 +1,6 @@
 //
 //  AppCoordinator.swift
-//  Unlockface
+//  BioUnlock
 //
 //  카메라·등록·잠금해제를 앱 수준에서 소유한다.
 //

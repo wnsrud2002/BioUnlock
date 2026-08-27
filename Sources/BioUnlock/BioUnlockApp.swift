@@ -1,6 +1,6 @@
 //
-//  UnlockfaceApp.swift
-//  Unlockface
+//  BioUnlockApp.swift
+//  BioUnlock
 //
 //  메뉴바 상주 앱. 창은 있어도 되고 없어도 되며, 인식 로직은 AppCoordinator 가 소유한다.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import UnlockKit
 
 @main
-struct UnlockfaceApp: App {
+struct BioUnlockApp: App {
     @StateObject private var app = AppCoordinator.shared
 
     init() {
@@ -48,11 +48,11 @@ struct UnlockfaceApp: App {
             let elapsed = Date().timeIntervalSince(start)
             print("\(label): \(ok ? "성공" : "실패") (\(String(format: "%.2f", elapsed))초)")
         }
-        timed("UnlockfaceLoginPassword 복호화") {
+        timed("BioUnlockLoginPassword 복호화") {
             LoginPasswordStore.withPassword { _ in true } ?? false
         }
-        timed("UnlockfaceMasterKey 조회(존재확인)") {
-            KeychainStore.exists(account: "UnlockfaceMasterKey")
+        timed("BioUnlockMasterKey 조회(존재확인)") {
+            KeychainStore.exists(account: "BioUnlockMasterKey")
         }
         return 0
     }
@@ -65,12 +65,12 @@ struct UnlockfaceApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Unlockface 설정", id: WindowID.settings) {
+        Window("BioUnlock 설정", id: WindowID.settings) {
             SettingsView(app: app)
         }
         .windowResizability(.contentSize)
 
-        Window("Unlockface 디버그", id: WindowID.debug) {
+        Window("BioUnlock 디버그", id: WindowID.debug) {
             DebugView(app: app)
         }
         .windowResizability(.contentMinSize)
