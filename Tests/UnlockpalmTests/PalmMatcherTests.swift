@@ -18,12 +18,16 @@ final class PalmMatcherTests: XCTestCase {
     private let size = 24
 
     /// 대각선 줄무늬(고대비) — 어느 커널 튜닝에서도 응답이 강하게 나오게 만든 합성 패턴.
+    ///
+    /// 나머지 연산에 주의: 반대 대각선은 x - y 가 음수가 되는데 Swift 의 % 는
+    /// 음수를 그대로 돌려준다. 그냥 `phase % 8 < 4` 로 쓰면 줄무늬가 아니라
+    /// 절반이 통짜로 칠해진 패턴이 나온다(실제로 그렇게 틀려 있었다).
     private func stripes(angle: StripeAngle) -> [Float] {
         var luma = [Float](repeating: 0, count: size * size)
         for y in 0..<size {
             for x in 0..<size {
                 let phase = angle == .diagonal ? (x + y) : (x - y)
-                luma[y * size + x] = (phase % 8 < 4) ? 255 : 0
+                luma[y * size + x] = (((phase % 8) + 8) % 8 < 4) ? 255 : 0
             }
         }
         return luma

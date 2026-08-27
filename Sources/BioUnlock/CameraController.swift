@@ -49,6 +49,9 @@ struct AlignedPalmResult {
     let sourcePixels: CGFloat
     /// 디버그 오버레이용 21점 전부(정렬에는 5점만 쓴다).
     let allJoints: [CGPoint]
+    /// 정렬에 쓴 5점을 이미지 픽셀 좌표로(왼손 반전까지 반영). 등록 1단계에서
+    /// 정준 좌표를 재추정하려면 크롭된 ROI가 아니라 이 원본 형상이 필요하다.
+    let alignmentPointsInImage: [CGPoint]
 
     var passesSourcePixelGate: Bool { sourcePixels >= PalmConfig.minSourcePixels }
     var passesAlignmentGate: Bool { residual <= PalmConfig.maxAlignmentResidual }
@@ -349,9 +352,8 @@ final class CameraController: NSObject, ObservableObject {
             palmGateFrameCount += 1
             if palmGateFrameCount % PalmConfig.matchEveryNFrames == 0 {
                 didCheckPalmMatch = true
-                let luma = FacePreprocessor.luma(from: alignedPalm.pixels,
-                                                 count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
-                if let code = PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize) {
+                // 전처리는 encode 안에서 한다 — 등록과 같은 경로를 강제하기 위해서다.
+                if let code = PalmMatcher.encode(rgba: alignedPalm.pixels, size: PalmAligner.roiOutputSize) {
                     palmMatchResult = PalmProfileStore.shared.verify(code)
                 }
             }
@@ -507,9 +509,12 @@ private extension CameraController {
         guard let points = PalmDetector.points(from: observation) else { return nil }
 
         let flipLeftHand = observation.chirality == .left
+        // 등록·인증이 반드시 같은 정준 좌표를 봐야 한다. 저장소 한 곳에서만 정한다.
+        let canonical = PalmProfileStore.shared.activeCanonical
         guard let diag = PalmAligner.diagnostics(points: points, imageExtent: image.extent,
-                                                 flipLeftHand: flipLeftHand),
-              let aligned = PalmAligner.align(image: image, points: points, flipLeftHand: flipLeftHand)
+                                                 flipLeftHand: flipLeftHand, canonical: canonical),
+              let aligned = PalmAligner.align(image: image, points: points,
+                                              flipLeftHand: flipLeftHand, canonical: canonical)
         else { return nil }
 
         let size = PalmAligner.roiOutputSize
@@ -528,7 +533,9 @@ private extension CameraController {
                                  isPalmFacing: PalmDetector.isPalmFacing(points, chirality: observation.chirality),
                                  residual: diag.residual,
                                  sourcePixels: diag.sourcePixels,
-                                 allJoints: PalmDetector.allPoints(from: observation))
+                                 allJoints: PalmDetector.allPoints(from: observation),
+                                 alignmentPointsInImage: PalmAligner.alignmentPointsInImage(
+                                     points: points, imageExtent: image.extent, flipLeftHand: flipLeftHand))
     }
 
     static func dump(result: AlignedFaceResult, tag: String) {

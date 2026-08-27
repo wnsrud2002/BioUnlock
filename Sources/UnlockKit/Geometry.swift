@@ -42,4 +42,42 @@ public enum Geometry {
         let ty = dstMean.y - (s * srcMean.x + c * srcMean.y)
         return CGAffineTransform(a: c, b: s, c: -s, d: c, tx: tx, ty: ty)
     }
+
+    /// 여러 관측 형상의 평균 형상(Procrustes mean).
+    ///
+    /// 각 관측을 현재 평균에 유사변환으로 맞춘 뒤 좌표를 평균내고, 그 결과를 다시
+    /// 평균으로 삼아 반복한다. 위치·회전·크기 차이를 걷어낸 '순수한 모양'만 남는다.
+    ///
+    /// 쓰는 이유: 정렬의 기준(정준 좌표)이 실제 형상과 어긋나 있으면 모든 프레임의
+    /// 잔차가 함께 커지고, 정렬 결과가 매번 다른 곳을 가리킨다. 문헌값이나 눈대중
+    /// 좌표 대신 그 사용자의 실측 형상으로 기준을 다시 잡는 데 쓴다.
+    ///
+    /// - Parameter shapes: 점 개수가 모두 같아야 한다. 빈 배열이면 nil.
+    public static func procrustesMeanShape(_ shapes: [[CGPoint]], iterations: Int = 8) -> [CGPoint]? {
+        guard let first = shapes.first, !first.isEmpty else { return nil }
+        guard shapes.allSatisfy({ $0.count == first.count }) else { return nil }
+
+        var mean = first
+        for _ in 0..<max(1, iterations) {
+            var sum = [CGPoint](repeating: .zero, count: first.count)
+            var used = 0
+            for shape in shapes {
+                // 이미 평균과 같은 자리에 있는 형상은 변환이 항등이라 그대로 더한다.
+                let aligned: [CGPoint]
+                if let t = similarityTransform(from: shape, to: mean) {
+                    aligned = shape.map { $0.applying(t) }
+                } else {
+                    continue   // 퇴화된 관측(모든 점이 같은 자리 등)은 건너뛴다
+                }
+                for i in 0..<first.count {
+                    sum[i].x += aligned[i].x
+                    sum[i].y += aligned[i].y
+                }
+                used += 1
+            }
+            guard used > 0 else { return nil }
+            mean = sum.map { CGPoint(x: $0.x / CGFloat(used), y: $0.y / CGFloat(used)) }
+        }
+        return mean
+    }
 }

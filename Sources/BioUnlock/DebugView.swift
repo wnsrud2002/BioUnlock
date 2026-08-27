@@ -143,15 +143,18 @@ struct DebugView: View {
             row("ROI 원본 픽셀", String(format: "%.0f px", p.sourcePixels))
             chip("ROI 픽셀 게이트", p.passesSourcePixelGate)
 
-            // Gabor 응답 임계값이 실측 전이라 처음엔 거의 확실히 안 맞는다.
-            // 재빌드 없이 여기서 바로 조정해가며 비교를 반복해볼 수 있게 했다.
+            chip("정렬 게이트", p.passesAlignmentGate)
+
+            // 방향 진폭 임계값은 실측 전이라 처음엔 안 맞을 가능성이 높다.
+            // 재빌드 없이 여기서 조정해가며 비교를 반복해볼 수 있게 했다.
+            // (바꾼 뒤에는 반드시 재등록해야 한다 — 등록 코드와 기준이 달라진다.)
             HStack(spacing: 6) {
-                Text("응답 임계값 \(String(format: "%.0f", PalmConfig.minGaborResponseMagnitude))")
+                Text("방향 진폭 \(String(format: "%.0f", PalmConfig.minOrientationSalience))")
                     .font(.system(size: 10))
-                Button("-5") {
-                    PalmConfig.minGaborResponseMagnitude = max(0, PalmConfig.minGaborResponseMagnitude - 5)
+                Button("-10") {
+                    PalmConfig.minOrientationSalience = max(0, PalmConfig.minOrientationSalience - 10)
                 }.font(.system(size: 10))
-                Button("+5") { PalmConfig.minGaborResponseMagnitude += 5 }.font(.system(size: 10))
+                Button("+10") { PalmConfig.minOrientationSalience += 10 }.font(.system(size: 10))
             }
 
             // 등록은 설정 → 손바닥 탭에서 한다. 여기서는 지금 등록돼 있는 것과
@@ -202,15 +205,14 @@ struct DebugView: View {
     /// CompCode 인코딩은 무거워서(9×9 커널 × 6방향 컨볼루션) 프레임마다 돌리지 않고
     /// 버튼을 누른 이 순간의 ROI 한 장에서만 계산한다.
     private func comparePalm(_ p: AlignedPalmResult) {
-        let luma = FacePreprocessor.luma(from: p.pixels, count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
-        guard let code = PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize) else { return }
+        guard let code = PalmMatcher.encode(rgba: p.pixels, size: PalmAligner.roiOutputSize) else { return }
         didAttemptCompare = true
         lastCompareValidRatio = code.validRatio
         lastMatchScore = PalmProfileStore.shared.verify(code)
         DiagnosticLog.write(String(
-            format: "palm 비교 score=%@ validRatio=%.3f threshold=%.2f gaborThreshold=%.0f",
+            format: "palm 비교 score=%@ validRatio=%.3f threshold=%.2f salience=%.0f",
             lastMatchScore.map { String(format: "%.4f", $0) } ?? "nil(비교불가)",
-            code.validRatio, PalmConfig.matchThreshold, PalmConfig.minGaborResponseMagnitude))
+            code.validRatio, PalmConfig.matchThreshold, PalmConfig.minOrientationSalience))
     }
 
     // MARK: - 인증

@@ -183,7 +183,7 @@ private struct PalmTab: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             switch session.step {
-            case .collecting:
+            case .measuring, .collecting:
                 collectingView
             case .idle, .done, .failed:
                 readyView
@@ -207,6 +207,8 @@ private struct PalmTab: View {
         VStack(spacing: 6) {
             Text("손바닥을 펴고 천천히 움직여 주세요")
                 .font(.system(size: 14, weight: .semibold))
+            Text(session.phaseLabel)
+                .font(.system(size: 11)).foregroundStyle(.secondary)
             Text("각도를 조금씩 바꾸면 인식률이 올라갑니다")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             ProgressView(value: session.progress)

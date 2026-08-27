@@ -53,15 +53,28 @@ public enum PalmConfig {
     /// 다중 샘플의 의미가 사라진다(얼굴 minSampleInterval과 같은 논리).
     public static var enrollmentSampleInterval: TimeInterval = 0.4
 
-    /// CompCode Gabor 응답 크기 하한 — 이보다 약하면 그 픽셀은 매칭에서 뺀다
-    /// (평평한 배경, 그림자 경계 등). 커널 스케일에 종속적인 값이라 실측 전 추정치다.
-    /// 처음에 50으로 뒀더니 실제 웹캠 ROI에서 거의 모든 픽셀이 걸러져 늘 비교
-    /// 불가가 나왔다 — 훨씬 낮춰서 시작하고, DebugView의 +/- 버튼으로 실측 조정한다.
-    public static var minGaborResponseMagnitude: Float = 10
+    /// 방향 진폭(방향별 Gabor 응답의 최대-최소) 하한. 이보다 평평하면 그 픽셀은
+    /// "방향이 의미 없는 곳"으로 보고 매칭에서 뺀다.
+    ///
+    /// 원래는 응답의 절대 크기로 걸렀는데, 그건 대비에 따라 통과 여부가 바뀌어
+    /// 평평한 피부까지 통과시켰다(방향이 난수인 픽셀이 코드에 섞임). 진폭 기준은
+    /// 밝기·대비 변화에 훨씬 둔감하다. CLAHE를 앞단에 넣으면서 응답 분포가
+    /// 통째로 올라가므로 값도 같이 올렸다 — DebugView의 +/- 버튼으로 실측 조정한다.
+    public static var minOrientationSalience: Float = 60
 
-    /// 두 코드를 비교할 때 겹쳐야 하는 최소 유효 픽셀 '개수'(전체 대비 비율 아님).
-    /// 손금 선은 ROI 면적의 일부만 차지하므로 비율로 잡으면 항상 문턱을 못 넘는다.
-    public static var minValidComparisonPixels: Int = 150
+    /// 두 코드를 비교할 때 겹쳐야 하는 유효 픽셀의 최소 개수(하한선).
+    public static var minValidComparisonPixels: Int = 500
+
+    /// 겹침 요구치를 '두 코드 중 유효 픽셀이 적은 쪽'의 몇 배로 볼지.
+    /// 고정 개수만 쓰면 유효 픽셀이 많은 코드에서도 희박한 겹침이 통과해,
+    /// 49개 이동 중 요행으로 최고점을 먹는 이동이 생긴다.
+    public static var minValidOverlapRatio: Float = 0.35
+
+    /// 손바닥 ROI(128px)용 CLAHE 격자·클립 한계. 128은 8로 나누어떨어진다.
+    /// 얼굴(2.0)보다 세게 잡는다 — 손금 주름 대비를 최대한 끌어올려야 하고,
+    /// 색 보존 제약이 없어 부작용이 적다.
+    public static var claheTiles: Int = 8
+    public static var claheClipLimit: Float = 4.0
 
     /// 손바닥 인증 임계값. 얼굴의 unlockIdentityThreshold와 같은 역할.
     ///

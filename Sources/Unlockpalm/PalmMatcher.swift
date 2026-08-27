@@ -69,8 +69,19 @@ public enum PalmMatcher {
 
     // MARK: - 인코딩
 
-    /// 정렬된 ROI의 루마(FacePreprocessor.luma와 같은 포맷, size*size)에서 코드를 뽑는다.
-    public static func encode(luma: [Float], size: Int) -> PalmCode? {
+    /// 정렬된 ROI(RGBA8)에서 코드를 뽑는다. 전처리(루마 변환 + CLAHE)를 안에서
+    /// 하는 이유는 등록과 인증이 서로 다른 전처리를 타는 사고를 원천 차단하기
+    /// 위해서다 — 루마를 받는 진입점은 일부러 노출하지 않는다.
+    public static func encode(rgba: [UInt8], size: Int) -> PalmCode? {
+        guard rgba.count >= size * size * 4 else { return nil }
+        var luma = PalmPreprocessor.luma(from: rgba, count: size * size)
+        PalmPreprocessor.applyCLAHE(luma: &luma, size: size)
+        return encode(luma: luma, size: size)
+    }
+
+    /// 루마 평면에서 직접 인코딩한다. 전처리를 이미 마친 데이터거나 합성
+    /// 테스트 패턴일 때만 쓴다(그래서 internal).
+    static func encode(luma: [Float], size: Int) -> PalmCode? {
         guard luma.count >= size * size, size > 2 * kernelRadius else { return nil }
 
         var bits = [UInt8](repeating: 0, count: size * size)
@@ -81,8 +92,8 @@ public enum PalmMatcher {
             for y in 0..<size {
                 for x in 0..<size {
                     var bestOrientation = 0
-                    var bestResponse: Float = .greatestFiniteMagnitude
-                    var bestMagnitude: Float = 0
+                    var minResponse: Float = .greatestFiniteMagnitude
+                    var maxResponse: Float = -.greatestFiniteMagnitude
 
                     for (orientation, kernel) in kernels.enumerated() {
                         var sum: Float = 0
@@ -96,12 +107,18 @@ public enum PalmMatcher {
                                 kidx += 1
                             }
                         }
-                        if sum < bestResponse { bestResponse = sum; bestOrientation = orientation }
-                        bestMagnitude = max(bestMagnitude, abs(sum))
+                        if sum < minResponse { minResponse = sum; bestOrientation = orientation }
+                        if sum > maxResponse { maxResponse = sum }
                     }
                     let i = y * size + x
                     bits[i] = UInt8(bestOrientation)
-                    mask[i] = bestMagnitude >= PalmConfig.minGaborResponseMagnitude
+                    // 마스크 기준은 응답의 '크기'가 아니라 방향별 응답의 '진폭'이다.
+                    //
+                    // 크기로 거르면 밝기·대비에 따라 통과 여부가 바뀐다 — 평평한
+                    // 피부도 밝으면 통과해서 방향이 사실상 난수인 픽셀이 코드에
+                    // 섞였다. 진폭(최대-최소)은 "여기서 방향이 의미가 있는가"를
+                    // 직접 재는 값이라, 주름이 없는 곳은 대비와 무관하게 걸러진다.
+                    mask[i] = (maxResponse - minResponse) >= PalmConfig.minOrientationSalience
                 }
             }
         }
@@ -130,6 +147,14 @@ public enum PalmMatcher {
 
     private static func normalizedHammingDistance(_ a: PalmCode, _ b: PalmCode, dx: Int, dy: Int) -> Float? {
         let size = a.size
+        // 겹침 하한을 '두 코드 중 유효 픽셀이 적은 쪽'에 비례시킨다.
+        // 절대 개수(150 = 전체의 0.9%)로 두었더니, 49개 이동 중 겹침이 거의 없는
+        // 이동이 요행으로 최고점을 먹어 같은 손·다른 손 점수를 함께 부풀렸다.
+        let aValid = a.mask.reduce(into: 0) { if $1 { $0 += 1 } }
+        let bValid = b.mask.reduce(into: 0) { if $1 { $0 += 1 } }
+        let required = max(PalmConfig.minValidComparisonPixels,
+                           Int(Float(min(aValid, bValid)) * PalmConfig.minValidOverlapRatio))
+
         var total: Float = 0
         var validCount = 0
         for y in 0..<size {
@@ -146,10 +171,8 @@ public enum PalmMatcher {
                 validCount += 1
             }
         }
-        // 유효 픽셀이 너무 적으면(정렬이 완전히 어긋났거나 손이 잘림) 이 이동량은 신뢰하지 않는다.
-        // 손금 선은 원래 ROI 면적의 일부만 차지하므로 전체 대비 비율이 아니라
-        // 절대 개수로 본다 — 비율 기준(예: 25%)은 애초에 못 채우는 문턱이었다.
-        guard validCount >= PalmConfig.minValidComparisonPixels else { return nil }
+        // 겹침이 부족한 이동은 채점에 쓰지 않는다(정렬이 어긋났거나 손이 잘린 경우).
+        guard validCount >= required else { return nil }
         return total / Float(validCount)
     }
 

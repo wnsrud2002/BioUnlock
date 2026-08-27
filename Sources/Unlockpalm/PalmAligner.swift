@@ -20,9 +20,14 @@ import UnlockKit
 
 public enum PalmAligner {
 
-    /// 정준 손 프레임 192×192, 원점 좌하단(CoreImage 규약).
-    /// 출발점 추정치 — 등록 샘플 20장의 평균 정렬 잔차가 최소가 되도록 재추정할 것.
-    public static let canonical192: [CGPoint] = [
+    /// 정준 손 프레임 192×192, 원점 좌하단(CoreImage 규약)의 '기본값'.
+    ///
+    /// 눈대중으로 잡은 출발점이라 실제 손 형상과 어긋나 있었다. 그 결과 모든
+    /// 프레임의 잔차가 함께 커져(실측 3.2~5.9px, 게이트 6.0에 아슬아슬) 매 프레임
+    /// ROI가 다른 곳을 잘랐고, 같은 손을 같은 세션에서 찍어도 코드가 0.66까지
+    /// 어긋났다. 등록 때 그 사용자의 실측 형상으로 재추정한 값을 쓰고, 이 값은
+    /// 등록 전(그리고 등록 중)의 임시 기준으로만 남는다. calibrated(from:) 참고.
+    public static let defaultCanonical192: [CGPoint] = [
         CGPoint(x: 146, y: 158),   // indexMCP
         CGPoint(x: 114, y: 164),   // middleMCP
         CGPoint(x:  82, y: 160),   // ringMCP
@@ -35,6 +40,26 @@ public enum PalmAligner {
     public static let roiInCanonical = CGRect(x: 32, y: 32, width: 128, height: 128)
     public static let roiOutputSize = 128
 
+    /// 관측된 5점 집합들로 그 사용자 전용 정준 좌표를 만든다.
+    ///
+    /// Procrustes 평균으로 '순수한 모양'을 뽑은 뒤, 기본 정준 좌표 위에 유사변환으로
+    /// 얹는다. 후자가 중요하다 — 평균 형상을 그대로 쓰면 프레임 안 위치·크기가
+    /// 제멋대로라 roiInCanonical이 손바닥을 벗어난다. 기본값에 맞춰 놓으면 ROI
+    /// 사각형은 그대로 두고 '모양'만 사용자 것으로 바꿀 수 있다.
+    public static func calibrated(from observations: [[CGPoint]]) -> [CGPoint]? {
+        guard let mean = Geometry.procrustesMeanShape(observations),
+              let place = Geometry.similarityTransform(from: mean, to: defaultCanonical192)
+        else { return nil }
+        return mean.map { $0.applying(place) }
+    }
+
+    /// 정렬에 쓰는 5점을 이미지 픽셀 좌표로 변환한다(왼손 반전 반영).
+    /// 정준 좌표 재추정(calibrated)에 넣을 관측 형상이 바로 이 값이다.
+    public static func alignmentPointsInImage(points: PalmPoints, imageExtent extent: CGRect,
+                                              flipLeftHand: Bool) -> [CGPoint] {
+        canonicalSource(points: points, imageExtent: extent, flipLeftHand: flipLeftHand)
+    }
+
     private static func canonicalSource(points: PalmPoints, imageExtent extent: CGRect,
                                         flipLeftHand: Bool) -> [CGPoint] {
         var src = points.alignmentArray.map {
@@ -46,11 +71,12 @@ public enum PalmAligner {
     }
 
     /// 원본 프레임에서 정렬된 정사각 손바닥 ROI를 잘라낸다.
-    public static func align(image: CIImage, points: PalmPoints, flipLeftHand: Bool) -> CIImage? {
+    public static func align(image: CIImage, points: PalmPoints, flipLeftHand: Bool,
+                             canonical: [CGPoint]) -> CIImage? {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
         let src = canonicalSource(points: points, imageExtent: extent, flipLeftHand: flipLeftHand)
-        guard let t = Geometry.similarityTransform(from: src, to: canonical192) else { return nil }
+        guard let t = Geometry.similarityTransform(from: src, to: canonical) else { return nil }
 
         let base = flipLeftHand
             ? image.transformed(by: CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -extent.maxX, y: 0))
@@ -62,14 +88,15 @@ public enum PalmAligner {
 
     /// 정렬 품질 자가진단(잔차) + ROI 원본 픽셀 수(스케일 역산)를 한 번에 낸다.
     /// 둘 다 같은 유사변환에서 나와야 서로 어긋나지 않는다.
-    public static func diagnostics(points: PalmPoints, imageExtent extent: CGRect, flipLeftHand: Bool)
+    public static func diagnostics(points: PalmPoints, imageExtent extent: CGRect,
+                                   flipLeftHand: Bool, canonical: [CGPoint])
         -> (residual: CGFloat, sourcePixels: CGFloat)? {
         guard extent.width > 0, extent.height > 0 else { return nil }
         let src = canonicalSource(points: points, imageExtent: extent, flipLeftHand: flipLeftHand)
-        guard let t = Geometry.similarityTransform(from: src, to: canonical192) else { return nil }
+        guard let t = Geometry.similarityTransform(from: src, to: canonical) else { return nil }
 
         var total: CGFloat = 0
-        for (p, q) in zip(src, canonical192) {
+        for (p, q) in zip(src, canonical) {
             let m = p.applying(t)
             total += hypot(m.x - q.x, m.y - q.y)
         }
