@@ -46,4 +46,11 @@ public enum PalmConfig {
     /// 한다. 로드맵 08번(타인 데이터셋 채점)을 거치기 전까지는 "완전히 안 맞던
     /// 걸 최소한 동작은 하게" 수준이지 보안 임계값이 아니다.
     public static var matchThreshold: Float = 0.73
+
+    /// 연속으로 통과해야 하는 프레임 수. 얼굴의 requiredConsecutiveFrames와 같은 역할.
+    public static var requiredConsecutiveFrames: Int = 3
+
+    /// CompCode 인코딩(9×9 커널×6방향 컨볼루션)은 무거워서 프레임마다 돌리지 않는다.
+    /// 게이트를 통과한 프레임 중 이 배수째만 실제로 계산한다.
+    public static var matchEveryNFrames: Int = 5
 }

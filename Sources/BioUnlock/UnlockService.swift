@@ -18,6 +18,7 @@ import ApplicationServices
 import IOKit.pwr_mgt
 import AppKit
 import UnlockKit
+import Unlockpalm
 
 @MainActor
 final class UnlockService: ObservableObject {
@@ -36,6 +37,9 @@ final class UnlockService: ObservableObject {
     @Published private(set) var lastScore: Float = 0
     @Published private(set) var lastLiveness: Float = 0
     @Published private(set) var rejectedAsSpoof: Bool = false
+    /// 얼굴과는 별도의 연속 프레임 카운터. 둘 중 하나만 통과해도(OR) 해제된다.
+    @Published private(set) var palmConsecutive: Int = 0
+    @Published private(set) var lastPalmScore: Float = 0
     @Published var isEnabled: Bool = false {
         didSet { if !isEnabled { reset() } }
     }
@@ -65,6 +69,7 @@ final class UnlockService: ObservableObject {
         guard isEnabled else { state = .disabled("꺼짐"); return }
         if locked {
             consecutive = 0
+            palmConsecutive = 0
             attemptID = UUID()
             state = .waiting
             DiagnosticLog.write("unlock: 화면 잠김 — 인식 시작")
@@ -76,6 +81,7 @@ final class UnlockService: ObservableObject {
 
     private func reset() {
         consecutive = 0
+        palmConsecutive = 0
         rejectedAsSpoof = false
         injecting = false
         attemptID = UUID()
@@ -120,6 +126,34 @@ final class UnlockService: ObservableObject {
         state = .matched(result.score)
         DiagnosticLog.write(String(format: "unlock: 인식 성공 score=%.4f live=%.4f name=%@ (연속 %d프레임)",
                                    result.score, lastLiveness, result.profileName ?? "-", consecutive))
+        beginUnlock()
+    }
+
+    /// 손바닥 대조 결과를 받는다. score가 nil이면(등록 안 됨/유효 픽셀 부족 등)
+    /// 판정을 못 한 것이므로 통과시키지 않는다(fail-closed).
+    ///
+    /// 경고: 손바닥 쪽에는 아직 라이브니스(사진·화면 재생 방어)가 전혀 없다.
+    /// 얼굴은 AntiSpoofDetector가 막지만 손바닥은 코드가 맞으면 그대로 통과한다.
+    /// 등록해야만 켜지는 기능이라 기본 상태에선 위험이 없지만, 등록한 순간부터는
+    /// 그 손바닥 사진 한 장으로도 뚫릴 수 있다는 뜻이다.
+    func feedPalm(score: Float?) {
+        guard isEnabled, !injecting, case .waiting = state else { return }
+        guard ScreenLockMonitor.shared.isLocked else { return }
+        guard let score else { palmConsecutive = 0; return }
+        lastPalmScore = score
+
+        guard score >= PalmConfig.matchThreshold else {
+            palmConsecutive = 0
+            return
+        }
+
+        palmConsecutive += 1
+        guard palmConsecutive >= PalmConfig.requiredConsecutiveFrames else { return }
+
+        state = .matched(score)
+        DiagnosticLog.write(String(
+            format: "unlock: 손바닥 인식 성공 score=%.4f (연속 %d프레임, 라이브니스 없음)",
+            score, palmConsecutive))
         beginUnlock()
     }
 
@@ -211,6 +245,7 @@ final class UnlockService: ObservableObject {
                     self.state = .failed("해제되지 않음. 비밀번호를 다시 저장해 보세요")
                     self.injecting = false
                     self.consecutive = 0
+                    self.palmConsecutive = 0
                 }
             } else {
                 DiagnosticLog.write("unlock: 성공")

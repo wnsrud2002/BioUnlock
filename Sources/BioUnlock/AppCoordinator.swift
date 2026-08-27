@@ -152,6 +152,11 @@ final class AppCoordinator: ObservableObject {
             self.enrollment.feed(face: face, aligned: aligned)
             self.unlock.feed(aligned: aligned)
         }
+        // 얼굴과 OR 조건 — 둘 중 하나만 통과해도 해제된다. 손바닥 쪽엔 라이브니스가
+        // 없다는 걸 UnlockService.feedPalm 안전 규칙 주석에 남겨 뒀다.
+        camera.onPalmMatch = { [weak self] score in
+            self?.unlock.feedPalm(score: score)
+        }
 
         // 잠금 상태에 따라 카메라를 켜고 끈다. 해제될 때마다 키체인도 데워둔다.
         ScreenLockMonitor.shared.$isLocked

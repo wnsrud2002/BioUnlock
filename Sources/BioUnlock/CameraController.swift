@@ -64,6 +64,11 @@ final class CameraController: NSObject, ObservableObject {
 
     /// 프레임마다 메인 스레드에서 불린다. 등록 세션이 여기에 붙는다.
     var onFrame: ((FaceFrameInfo, AlignedFaceResult) -> Void)?
+    /// 손바닥 대조 결과 — 게이트를 통과한 프레임 중 PalmConfig.matchEveryNFrames째만
+    /// 실제로 계산해서 부른다(그 외 프레임은 아예 호출하지 않는다. nil 콜백과
+    /// "이번엔 계산 안 함"을 구분해야 UnlockService의 연속 카운터가 애먼 타이밍에
+    /// 리셋되지 않는다).
+    var onPalmMatch: ((Float?) -> Void)?
     @Published private(set) var fps: Double = 0
     @Published private(set) var status: String = "대기 중"
     @Published private(set) var isRunning: Bool = false
@@ -115,6 +120,8 @@ final class CameraController: NSObject, ObservableObject {
     private var wantsRunning = false
     /// 등록 중에만 TTA를 돌린다. visionQueue 에서만 읽고 쓴다.
     private var enrolling = false
+    /// 손바닥 게이트를 통과한 프레임 수(CompCode 계산 스로틀용). visionQueue 전용.
+    private var palmGateFrameCount = 0
 
     // MARK: - 권한
 
@@ -256,6 +263,7 @@ final class CameraController: NSObject, ObservableObject {
             self.framesSeen = 0
             self.fpsCount = 0
             self.fpsWindowStart = CFAbsoluteTimeGetCurrent()
+            self.palmGateFrameCount = 0
             self.shouldProcess = true
         }
         session.startRunning()
@@ -326,6 +334,24 @@ final class CameraController: NSObject, ObservableObject {
             alignedPalm = makeAlignedPalm(from: ciImage, observation: handObservation)
         }
 
+        // CompCode 대조는 무거워서(9×9 커널×6방향) 게이트를 통과한 프레임마다도 안 돌리고
+        // 그중 매 N번째만 돌린다. 그 외 프레임은 콜백 자체를 안 불러 연속 카운터를 안 건드린다.
+        var didCheckPalmMatch = false
+        var palmMatchResult: Float?
+        if let alignedPalm, alignedPalm.isPalmFacing, alignedPalm.passesSourcePixelGate {
+            palmGateFrameCount += 1
+            if palmGateFrameCount % PalmConfig.matchEveryNFrames == 0 {
+                didCheckPalmMatch = true
+                let luma = FacePreprocessor.luma(from: alignedPalm.pixels,
+                                                 count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
+                if let code = PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize) {
+                    palmMatchResult = PalmProfileStore.shared.verify(code)
+                }
+            }
+        } else {
+            palmGateFrameCount = 0
+        }
+
         var image: CGImage?
         if framesSeen % FaceIDConfig.previewRenderEveryNFrames == 0 {
             image = makePreviewImage(from: ciImage)
@@ -348,6 +374,7 @@ final class CameraController: NSObject, ObservableObject {
             self.aligned = alignedResult
             self.palm = alignedPalm
             if let info, let alignedResult { self.onFrame?(info, alignedResult) }
+            if didCheckPalmMatch { self.onPalmMatch?(palmMatchResult) }
             if let image { self.previewImage = image }
             if let newFPS { self.fps = newFPS }
         }

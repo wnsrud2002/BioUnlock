@@ -21,7 +21,7 @@ struct MenuBarView: View {
                 Spacer()
             }
 
-            Toggle("얼굴로 잠금 해제", isOn: app.unlockEnabled)
+            Toggle("얼굴/손바닥으로 잠금 해제", isOn: app.unlockEnabled)
                 .toggleStyle(.switch)
                 .disabled(!app.isReadyToUnlock)
                 .font(.system(size: 12))

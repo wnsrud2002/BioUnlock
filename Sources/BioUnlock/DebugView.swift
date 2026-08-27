@@ -124,8 +124,13 @@ struct DebugView: View {
         }
     }
 
-    // MARK: - 손바닥 (로드맵 05~07번 — CompCode는 여기서 세션 임시 등록으로만 시험한다.
-    // 암호화 저장(PalmProfileStore)·라이브니스는 아직 없다.)
+    // MARK: - 손바닥 (로드맵 05~10번)
+    //
+    // "이 손 등록"은 이제 화면 잠금 해제에도 실제로 쓰인다(PalmProfileStore.shared —
+    // 세션 메모리에만 있고 앱을 끄면 사라진다. 암호화 영구 저장은 아직 없다).
+    // 얼굴과 OR 조건이라 등록하는 순간부터 이 손으로도 잠금이 풀린다.
+    // 라이브니스가 없어 사진 한 장으로도 뚫릴 수 있다 — 등록 자체가 그 위험을
+    // 받아들이는 행위라는 뜻이다.
 
     @ViewBuilder
     private var palmPanel: some View {
@@ -156,10 +161,14 @@ struct DebugView: View {
             }
 
             HStack(spacing: 6) {
-                Button("이 손 등록") { registerPalm(p) }.font(.system(size: 10))
+                Button("이 손 등록 (실제 잠금해제에 반영됨)") { registerPalm(p) }.font(.system(size: 10))
                 Button("지금 비교") { comparePalm(p) }
                     .font(.system(size: 10))
                     .disabled(registeredPalmCode == nil)
+                if registeredPalmCode != nil {
+                    Button("등록 지우기") { clearRegisteredPalm() }
+                        .font(.system(size: 10)).foregroundStyle(.red)
+                }
             }
 
             if let ratio = registeredValidRatio {
@@ -218,9 +227,21 @@ struct DebugView: View {
         lastMatchScore = nil
         lastCompareValidRatio = nil
         didAttemptCompare = false
+        PalmProfileStore.shared.register(code)
         DiagnosticLog.write(String(
-            format: "palm 등록 validRatio=%.3f gaborThreshold=%.0f",
+            format: "palm 등록(실제 잠금해제 반영) validRatio=%.3f gaborThreshold=%.0f",
             code.validRatio, PalmConfig.minGaborResponseMagnitude))
+    }
+
+    private func clearRegisteredPalm() {
+        registeredPalmCode = nil
+        registeredPalmThumb = nil
+        registeredValidRatio = nil
+        lastMatchScore = nil
+        lastCompareValidRatio = nil
+        didAttemptCompare = false
+        PalmProfileStore.shared.clear()
+        DiagnosticLog.write("palm 등록 삭제됨")
     }
 
     private func comparePalm(_ p: AlignedPalmResult) {
