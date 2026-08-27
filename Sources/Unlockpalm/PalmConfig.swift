@@ -23,4 +23,12 @@ public enum PalmConfig {
 
     /// ROI 원본 픽셀 수 하한. 이보다 작으면 손이 너무 멀어 텍스처 정보가 없다.
     public static var minSourcePixels: CGFloat = 160
+
+    /// CompCode Gabor 응답 크기 하한 — 이보다 약하면 그 픽셀은 매칭에서 뺀다
+    /// (평평한 배경, 그림자 경계 등). 커널 스케일에 종속적인 값이라 실측 전 추정치다.
+    public static var minGaborResponseMagnitude: Float = 50
+
+    /// 손바닥 인증 임계값. 얼굴의 unlockIdentityThreshold와 같은 역할 —
+    /// 타인 데이터셋 채점 전까지는 순전히 추정치다(로드맵 08번에서 확정).
+    public static var matchThreshold: Float = 0.65
 }

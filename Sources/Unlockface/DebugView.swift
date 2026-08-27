@@ -14,6 +14,11 @@ import Unlockpalm
 struct DebugView: View {
     @ObservedObject var app: AppCoordinator
     @State private var savedNote: String?
+    /// 세션 안에서만 유지되는 테스트용 등록 — 암호화 저장(PalmProfileStore)은
+    /// 아직 없다. "이 손금 방식이 사람을 구분할 수 있는가"만 여기서 확인한다.
+    @State private var registeredPalmCode: PalmCode?
+    @State private var registeredPalmThumb: CGImage?
+    @State private var lastMatchScore: Float?
 
     private var camera: CameraController { app.camera }
 
@@ -115,12 +120,16 @@ struct DebugView: View {
         }
     }
 
-    // MARK: - 손바닥 (로드맵 05번 — 아직 매칭·라이브니스 없음)
+    // MARK: - 손바닥 (로드맵 05~07번 — CompCode는 여기서 세션 임시 등록으로만 시험한다.
+    // 암호화 저장(PalmProfileStore)·라이브니스는 아직 없다.)
 
     @ViewBuilder
     private var palmPanel: some View {
         if let p = camera.palm {
-            HStack(spacing: 8) { palmThumb(p.roi) }
+            HStack(spacing: 8) {
+                palmThumb(p.roi, caption: "현재")
+                if let thumb = registeredPalmThumb { palmThumb(thumb, caption: "등록됨") }
+            }
             row("손", p.chirality == .right ? "오른손" : (p.chirality == .left ? "왼손" : "?"))
             HStack(spacing: 6) {
                 chip(p.isPalmFacing ? "손바닥" : "손등(또는 부호 반대)", p.isPalmFacing)
@@ -130,21 +139,55 @@ struct DebugView: View {
             row("residual", String(format: "%.2f px", p.residual))
             row("ROI 원본 픽셀", String(format: "%.0f px", p.sourcePixels))
             chip("ROI 픽셀 게이트", p.passesSourcePixelGate)
+
+            HStack(spacing: 6) {
+                Button("이 손 등록") { registerPalm(p) }.font(.system(size: 10))
+                Button("지금 비교") { comparePalm(p) }
+                    .font(.system(size: 10))
+                    .disabled(registeredPalmCode == nil)
+            }
+            if let score = lastMatchScore {
+                row("매칭 점수", String(format: "%.4f", score))
+                HStack(spacing: 6) {
+                    chip(score >= PalmConfig.matchThreshold ? "같은 손(추정)" : "다른 손(추정)",
+                         score >= PalmConfig.matchThreshold)
+                    Text(String(format: "임계 %.2f(미실측 추정치)", PalmConfig.matchThreshold))
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
         } else {
             empty("손 없음 — 손바닥을 카메라 쪽으로 들어보세요")
         }
     }
 
-    private func palmThumb(_ image: CGImage) -> some View {
+    private func palmThumb(_ image: CGImage, caption: String) -> some View {
         let side: CGFloat = 120
         return VStack(spacing: 3) {
-            Image(image, scale: 1, label: Text("palm"))
+            Image(image, scale: 1, label: Text(caption))
                 .resizable().interpolation(.none)
                 .frame(width: side, height: side)
                 .background(Color.black)
-            Text("\(PalmAligner.roiOutputSize)×\(PalmAligner.roiOutputSize) ROI")
-                .font(.system(size: 9)).foregroundStyle(.secondary)
+            Text(caption).font(.system(size: 9)).foregroundStyle(.secondary)
         }
+    }
+
+    /// CompCode 인코딩은 무거워서(9×9 커널 × 6방향 컨볼루션) 프레임마다 돌리지 않고
+    /// 버튼을 누른 이 순간의 ROI 한 장에서만 계산한다.
+    private func encodePalm(_ p: AlignedPalmResult) -> PalmCode? {
+        let luma = FacePreprocessor.luma(from: p.pixels, count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
+        return PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize)
+    }
+
+    private func registerPalm(_ p: AlignedPalmResult) {
+        guard let code = encodePalm(p) else { return }
+        registeredPalmCode = code
+        registeredPalmThumb = p.roi
+        lastMatchScore = nil
+    }
+
+    private func comparePalm(_ p: AlignedPalmResult) {
+        guard let registeredPalmCode, let code = encodePalm(p) else { return }
+        lastMatchScore = PalmMatcher.score(registeredPalmCode, code)
     }
 
     // MARK: - 인증

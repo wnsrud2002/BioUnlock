@@ -40,6 +40,9 @@ struct AlignedFaceResult {
 /// 임베딩은 없고, PalmDetector/PalmAligner가 잘 동작하는지 눈으로 확인하는 용도다.
 struct AlignedPalmResult {
     let roi: CGImage
+    /// roi와 같은 내용의 RGBA8 원본 바이트. CompCode 인코딩(PalmMatcher)은 매 프레임
+    /// 돌리기엔 무거워서 디버그 뷰가 버튼을 누른 시점에만 여기서 루마를 뽑아 쓴다.
+    let pixels: [UInt8]
     let chirality: VNChirality
     let isPalmFacing: Bool
     let residual: CGFloat
@@ -485,6 +488,7 @@ private extension CameraController {
         guard let roi = Self.makeCGImage(rgba: pixels, size: size) else { return nil }
 
         return AlignedPalmResult(roi: roi,
+                                 pixels: pixels,
                                  chirality: observation.chirality,
                                  isPalmFacing: PalmDetector.isPalmFacing(points, chirality: observation.chirality),
                                  residual: diag.residual,
