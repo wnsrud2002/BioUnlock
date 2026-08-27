@@ -188,6 +188,19 @@ private struct PalmTab: View {
                     statusChip("손바닥 방향", p.isPalmFacing)
                     statusChip("거리 적당", p.passesSourcePixelGate)
                 }
+                // 방향 판별 부호는 카메라·손마다 다를 수 있어 출발점 추정치다.
+                // 손바닥을 보이고 있는데도 위 칩이 빨간색이면 이 버튼으로 뒤집는다.
+                if !p.isPalmFacing {
+                    HStack(spacing: 6) {
+                        Text("분명 손바닥을 보이고 있다면:").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Button("부호 뒤집기") { PalmConfig.palmFacingSign *= -1 }.font(.system(size: 10))
+                    }
+                }
+                if !p.passesSourcePixelGate {
+                    Text(String(format: "손을 더 가까이(현재 %.0fpx, 필요 %.0fpx 이상)",
+                                p.sourcePixels, PalmConfig.minSourcePixels))
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
                 Button("이 손 등록") { register(p) }
                     .buttonStyle(.borderedProminent)
                     .disabled(!(p.isPalmFacing && p.passesSourcePixelGate))

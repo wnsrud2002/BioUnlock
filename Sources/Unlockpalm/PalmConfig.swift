@@ -12,8 +12,21 @@ import CoreGraphics
 public enum PalmConfig {
 
     /// 손바닥/손등 판별 외적 부호. 전면 카메라 미러링 여부에 따라 뒤집힌다.
-    /// DebugView의 "부호 뒤집기" 버튼으로 실행 중 바로 확정할 수 있다.
-    public static var palmFacingSign: CGFloat = -1
+    /// 설정 → 손바닥 탭(또는 디버그 창)의 "부호 뒤집기" 버튼으로 확정한다.
+    ///
+    /// UserDefaults에 저장한다 — 원래 그냥 static var였는데, 앱을 재시작할 때마다
+    /// 기본값(-1)으로 돌아가 버려서 "방금 맞춰놨는데 또 안 됨"의 원인이 됐다.
+    public static var palmFacingSign: CGFloat {
+        get {
+            let stored = UserDefaults.standard.double(forKey: Keys.palmFacingSign)
+            return stored == 0 ? -1 : CGFloat(stored)
+        }
+        set { UserDefaults.standard.set(Double(newValue), forKey: Keys.palmFacingSign) }
+    }
+
+    private enum Keys {
+        static let palmFacingSign = "palmFacingSign"
+    }
 
     /// 정렬(5점)에 쓰는 관절의 최소 신뢰도. 손가락 끝은 자주 가려지지만 MCP·손목은 거의 안 가려진다.
     public static var minJointConfidence: Float = 0.7
