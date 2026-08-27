@@ -2,42 +2,136 @@
 //  PalmProfileStore.swift
 //  Unlockpalm
 //
-//  등록된 손바닥 코드 하나를 들고 있다가 대조 요청에 응답한다.
+//  등록된 손바닥 샘플들을 들고 있다가 대조 요청에 응답한다.
 //
-//  FaceProfileStore와 이름은 대칭이지만 지금은 훨씬 못하다 — 세션 메모리에만
-//  있고(앱을 끄면 사라짐), 암호화도 디스크 저장도 없다. 여러 프로필도 아직
-//  못 다룬다(등록하면 이전 것을 덮어쓴다). "일단 잠금해제가 되는지" 보려는
-//  단계라 FaceProfileStore 수준의 안전장치(ChaChaPoly 암호화, 키체인 분리
-//  보관, 원자적 파일 쓰기)는 전부 나중 몫이다.
+//  샘플이 여러 장인 이유(FaceProfileStore와 같은 논리): 참조가 한 장뿐이면 등록
+//  당시의 각도·거리에서 조금만 벗어나도 점수가 무너진다. 실측(2026-08-28)에서
+//  같은 손인데도 0.57~0.84로 출렁였고 10번 중 1번만 잠금이 풀렸다. 여러 장 중
+//  '가장 잘 맞는 것'을 쓰면 그 출렁임의 아래쪽 꼬리가 올라간다.
+//
+//  얼굴과 다른 점 하나: 얼굴은 최고값 0.85 + 중심 0.15로 섞지만 손바닥은 최고값만
+//  쓴다. CompCode는 방향 인덱스(0…5)라 코드끼리 평균을 내면 '중간 방향'이라는
+//  엉뚱한 값이 나온다 — 임베딩 벡터처럼 평균낼 수 있는 표현이 아니다.
 //
 
 import Foundation
+import CryptoKit
+import UnlockKit
 
 public final class PalmProfileStore {
     public static let shared = PalmProfileStore()
 
-    private let lock = NSLock()
-    private var registered: PalmCode?
+    /// 상태를 지키는 잠금. 키체인·파일 I/O 중에는 잡지 않는다.
+    private let stateLock = NSLock()
+    private var samples: [PalmCode] = []
 
-    private init() {}
+    private let ioQueue = DispatchQueue(label: "tech.biounlock.palm.io", qos: .userInitiated)
+    private let keyAccount = "BioUnlockPalmKey"
+    private let fileURL: URL
 
-    public var isEmpty: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return registered == nil
+    private init() {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = support.appendingPathComponent(Bundle.main.bundleIdentifier ?? "tech.biounlock.app")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        fileURL = dir.appendingPathComponent("palmprints.encrypted")
+        // 키체인 복호화가 메인 스레드를 막지 않도록 비동기로 읽는다(FaceProfileStore와 동일).
+        ioQueue.async { [weak self] in self?.performLoad() }
     }
 
-    public func register(_ code: PalmCode) {
-        lock.lock(); registered = code; lock.unlock()
+    /// 로드·등록·삭제로 샘플이 바뀌면 메인 스레드에서 불린다.
+    public var onSamplesChanged: (() -> Void)?
+
+    public var isEmpty: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return samples.isEmpty
+    }
+
+    public var sampleCount: Int {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return samples.count
+    }
+
+    /// 등록 샘플 전체를 한 번에 교체한다. 부분 추가는 지원하지 않는다 —
+    /// 등록 세션이 통째로 다시 도는 편이 "언제 찍힌 샘플인지" 추적하기 쉽다.
+    public func register(_ codes: [PalmCode]) {
+        stateLock.lock(); samples = codes; stateLock.unlock()
+        save()
+        notifyChanged()
     }
 
     public func clear() {
-        lock.lock(); registered = nil; lock.unlock()
+        stateLock.lock(); samples = []; stateLock.unlock()
+        try? FileManager.default.removeItem(at: fileURL)
+        KeychainStore.delete(account: keyAccount)
+        notifyChanged()
     }
 
-    /// 등록된 코드가 없으면 nil(= 대조 불가, fail-closed로 이어져야 한다).
+    /// 등록된 샘플이 없으면 nil(= 대조 불가, fail-closed로 이어져야 한다).
+    /// 있으면 샘플들 중 최고 점수. 개별 비교가 전부 nil(유효 픽셀 부족)이어도 nil.
     public func verify(_ candidate: PalmCode) -> Float? {
-        lock.lock(); let ref = registered; lock.unlock()
-        guard let ref else { return nil }
-        return PalmMatcher.score(ref, candidate)
+        stateLock.lock(); let refs = samples; stateLock.unlock()
+        guard !refs.isEmpty else { return nil }
+        return refs.compactMap { PalmMatcher.score($0, candidate) }.max()
+    }
+
+    // MARK: - 암호화 저장
+
+    private func notifyChanged() {
+        DispatchQueue.main.async { [weak self] in self?.onSamplesChanged?() }
+    }
+
+    /// - Parameter createIfMissing: 키가 '확실히 없을 때만' 새로 만든다.
+    ///   읽기 실패(권한 거부 등)에서 새 키를 만들면 기존 데이터를 영영 못 푼다
+    ///   — FaceProfileStore가 실제로 그렇게 프로필을 잃은 적이 있어 같은 규칙을 지킨다.
+    private func masterKey(createIfMissing: Bool) -> SymmetricKey? {
+        switch KeychainStore.load(account: keyAccount) {
+        case .found(let data):
+            return SymmetricKey(data: data)
+        case .failed(let status):
+            DiagnosticLog.write("palm 키를 읽을 수 없음 status=\(status) — 새 키를 만들지 않고 중단")
+            return nil
+        case .missing:
+            guard createIfMissing else { return nil }
+            let key = SymmetricKey(size: .bits256)
+            let data = key.withUnsafeBytes { Data($0) }
+            guard KeychainStore.add(data, account: keyAccount) == errSecSuccess else { return nil }
+            return key
+        }
+    }
+
+    private func save() {
+        let snapshot = { stateLock.lock(); defer { stateLock.unlock() }; return samples }()
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            guard let key = self.masterKey(createIfMissing: true),
+                  let plain = try? JSONEncoder().encode(snapshot),
+                  let sealed = try? ChaChaPoly.seal(plain, using: key) else {
+                DiagnosticLog.write("palm 저장 실패")
+                return
+            }
+            do {
+                try sealed.combined.write(to: self.fileURL, options: [.atomic, .completeFileProtection])
+                DiagnosticLog.write("palm 저장됨 (샘플 \(snapshot.count))")
+            } catch {
+                DiagnosticLog.write("palm 파일 쓰기 실패: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// ioQueue 에서만 호출. 키체인 복호화가 포함되므로 메인 스레드에서 부르면 안 된다.
+    private func performLoad() {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        // 읽기 경로에서는 절대 키를 만들지 않는다.
+        guard let key = masterKey(createIfMissing: false) else { return }
+        guard let raw = try? Data(contentsOf: fileURL),
+              let box = try? ChaChaPoly.SealedBox(combined: raw),
+              let plain = try? ChaChaPoly.open(box, using: key),
+              let decoded = try? JSONDecoder().decode([PalmCode].self, from: plain) else {
+            DiagnosticLog.write("palm 복호화 실패 — 파일이 손상됐거나 키가 바뀜")
+            return
+        }
+        stateLock.lock(); samples = decoded; stateLock.unlock()
+        DiagnosticLog.write("palm 로드 완료 (샘플 \(decoded.count))")
+        notifyChanged()
     }
 }

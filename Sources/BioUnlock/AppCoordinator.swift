@@ -22,6 +22,7 @@ final class AppCoordinator: ObservableObject {
 
     let camera = CameraController()
     let enrollment = EnrollmentSession()
+    let palmEnrollment = PalmEnrollmentSession()
     let unlock = UnlockService()
 
     @Published private(set) var profileNames: [String] = []
@@ -30,6 +31,7 @@ final class AppCoordinator: ObservableObject {
     /// PalmProfileStore(세션 메모리)는 그 자체로 Combine 발행자가 아니라서,
     /// 등록/삭제 직후 DebugView가 refreshPalmRegistration()을 불러 갱신한다.
     @Published private(set) var hasPalmRegistered: Bool = false
+    @Published private(set) var palmSampleCount: Int = 0
 
     /// 카메라를 항상 켜 둘지. 끄면 잠금·등록·프리뷰 중에만 켜진다.
     /// 항상 켜면 녹색 LED 가 상시 점등하지만 인식이 0.5초 정도 빨라진다.
@@ -138,6 +140,9 @@ final class AppCoordinator: ObservableObject {
         FaceProfileStore.shared.onProfilesChanged = { [weak self] in
             self?.refreshProfiles()
         }
+        PalmProfileStore.shared.onSamplesChanged = { [weak self] in
+            self?.refreshPalmRegistration()
+        }
         refreshProfiles()
         refreshPalmRegistration()
         passwordIsSet = LoginPasswordStore.isSet
@@ -156,6 +161,9 @@ final class AppCoordinator: ObservableObject {
         enrollment.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        palmEnrollment.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         // 프레임은 한 곳에서 받아 필요한 곳으로 나눠준다.
         camera.onFrame = { [weak self] face, aligned in
@@ -167,6 +175,9 @@ final class AppCoordinator: ObservableObject {
         // 없다는 걸 UnlockService.feedPalm 안전 규칙 주석에 남겨 뒀다.
         camera.onPalmMatch = { [weak self] score in
             self?.unlock.feedPalm(score: score)
+        }
+        camera.onPalmFrame = { [weak self] palm in
+            self?.palmEnrollment.feed(palm)
         }
 
         // 잠금 상태에 따라 카메라를 켜고 끈다. 해제될 때마다 키체인도 데워둔다.
@@ -255,6 +266,7 @@ final class AppCoordinator: ObservableObject {
 
     func refreshPalmRegistration() {
         hasPalmRegistered = !PalmProfileStore.shared.isEmpty
+        palmSampleCount = PalmProfileStore.shared.sampleCount
     }
 
     func requestAccessibility() {

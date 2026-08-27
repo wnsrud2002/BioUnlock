@@ -21,7 +21,7 @@ import Foundation
 
 /// 손바닥 하나의 방향 코드. bits[i]는 0...5(30° 단위), mask[i]는 응답이 충분히
 /// 강해 신뢰할 수 있는 픽셀인지.
-public struct PalmCode: Equatable {
+public struct PalmCode: Equatable, Codable {
     let bits: [UInt8]
     let mask: [Bool]
     let size: Int

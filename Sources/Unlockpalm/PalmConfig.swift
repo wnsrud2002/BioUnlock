@@ -37,6 +37,22 @@ public enum PalmConfig {
     /// ROI 원본 픽셀 수 하한. 이보다 작으면 손이 너무 멀어 텍스처 정보가 없다.
     public static var minSourcePixels: CGFloat = 160
 
+    /// 정렬 잔차(픽셀) 상한. 5점이 유사변환으로 설명되지 않을수록 커진다 —
+    /// 크면 ROI가 엉뚱한 데를 잘라서 CompCode가 통째로 쓰레기가 된다.
+    ///
+    /// 원래 diagnostics()로 계산만 하고 실제 매칭 경로에서는 전혀 안 쓰고 있었다.
+    /// 정렬이 틀어진 프레임의 코드가 그대로 채점에 들어가 점수가 0.57까지 떨어지던
+    /// 원인 중 하나(2026-08-28 실측). 얼굴의 alignmentResidualMax(6.0)와 같은 역할.
+    public static var maxAlignmentResidual: CGFloat = 6.0
+
+    /// 등록 시 모을 샘플 수. 참조가 한 장뿐이면 등록 당시 각도에서 조금만 벗어나도
+    /// 점수가 무너진다(얼굴이 포즈 버킷별로 여러 장 모으는 것과 같은 이유).
+    public static var enrollmentSampleCount: Int = 5
+
+    /// 등록 샘플 사이 최소 간격(초). 없으면 30fps에서 거의 같은 프레임 N장을 모으게 되어
+    /// 다중 샘플의 의미가 사라진다(얼굴 minSampleInterval과 같은 논리).
+    public static var enrollmentSampleInterval: TimeInterval = 0.4
+
     /// CompCode Gabor 응답 크기 하한 — 이보다 약하면 그 픽셀은 매칭에서 뺀다
     /// (평평한 배경, 그림자 경계 등). 커널 스케일에 종속적인 값이라 실측 전 추정치다.
     /// 처음에 50으로 뒀더니 실제 웹캠 ROI에서 거의 모든 픽셀이 걸러져 늘 비교

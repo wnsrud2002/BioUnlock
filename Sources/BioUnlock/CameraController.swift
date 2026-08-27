@@ -51,6 +51,9 @@ struct AlignedPalmResult {
     let allJoints: [CGPoint]
 
     var passesSourcePixelGate: Bool { sourcePixels >= PalmConfig.minSourcePixels }
+    var passesAlignmentGate: Bool { residual <= PalmConfig.maxAlignmentResidual }
+    /// 등록·매칭 모두 이 게이트를 통과한 프레임만 쓴다.
+    var passesAllGates: Bool { isPalmFacing && passesSourcePixelGate && passesAlignmentGate }
 }
 
 final class CameraController: NSObject, ObservableObject {
@@ -69,6 +72,10 @@ final class CameraController: NSObject, ObservableObject {
     /// "이번엔 계산 안 함"을 구분해야 UnlockService의 연속 카운터가 애먼 타이밍에
     /// 리셋되지 않는다).
     var onPalmMatch: ((Float?) -> Void)?
+    /// 손이 잡힌 프레임마다 메인 스레드에서 불린다. 손바닥 등록 세션이 여기에 붙는다.
+    /// 게이트 판정은 붙는 쪽이 한다 — 등록은 "왜 안 담기는지" 안내해야 해서
+    /// 게이트를 통과 못 한 프레임도 봐야 하기 때문이다.
+    var onPalmFrame: ((AlignedPalmResult) -> Void)?
     @Published private(set) var fps: Double = 0
     @Published private(set) var status: String = "대기 중"
     @Published private(set) var isRunning: Bool = false
@@ -338,7 +345,7 @@ final class CameraController: NSObject, ObservableObject {
         // 그중 매 N번째만 돌린다. 그 외 프레임은 콜백 자체를 안 불러 연속 카운터를 안 건드린다.
         var didCheckPalmMatch = false
         var palmMatchResult: Float?
-        if let alignedPalm, alignedPalm.isPalmFacing, alignedPalm.passesSourcePixelGate {
+        if let alignedPalm, alignedPalm.passesAllGates {
             palmGateFrameCount += 1
             if palmGateFrameCount % PalmConfig.matchEveryNFrames == 0 {
                 didCheckPalmMatch = true
@@ -374,6 +381,7 @@ final class CameraController: NSObject, ObservableObject {
             self.aligned = alignedResult
             self.palm = alignedPalm
             if let info, let alignedResult { self.onFrame?(info, alignedResult) }
+            if let alignedPalm { self.onPalmFrame?(alignedPalm) }
             if didCheckPalmMatch { self.onPalmMatch?(palmMatchResult) }
             if let image { self.previewImage = image }
             if let newFPS { self.fps = newFPS }
