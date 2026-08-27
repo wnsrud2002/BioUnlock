@@ -208,13 +208,19 @@ struct DebugView: View {
     }
 
     private func registerPalm(_ p: AlignedPalmResult) {
-        guard let code = encodePalm(p) else { return }
+        guard let code = encodePalm(p) else {
+            DiagnosticLog.write("palm 등록 실패 — 인코딩 불가")
+            return
+        }
         registeredPalmCode = code
         registeredPalmThumb = p.roi
         registeredValidRatio = code.validRatio
         lastMatchScore = nil
         lastCompareValidRatio = nil
         didAttemptCompare = false
+        DiagnosticLog.write(String(
+            format: "palm 등록 validRatio=%.3f gaborThreshold=%.0f",
+            code.validRatio, PalmConfig.minGaborResponseMagnitude))
     }
 
     private func comparePalm(_ p: AlignedPalmResult) {
@@ -222,6 +228,11 @@ struct DebugView: View {
         didAttemptCompare = true
         lastCompareValidRatio = code.validRatio
         lastMatchScore = PalmMatcher.score(registeredPalmCode, code)
+        DiagnosticLog.write(String(
+            format: "palm 비교 score=%@ validRatio=등록%.3f/현재%.3f threshold=%.2f gaborThreshold=%.0f",
+            lastMatchScore.map { String(format: "%.4f", $0) } ?? "nil(비교불가)",
+            registeredValidRatio ?? -1, code.validRatio,
+            PalmConfig.matchThreshold, PalmConfig.minGaborResponseMagnitude))
     }
 
     // MARK: - 인증
