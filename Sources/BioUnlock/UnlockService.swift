@@ -40,9 +40,18 @@ final class UnlockService: ObservableObject {
     /// 얼굴과는 별도의 연속 프레임 카운터. 둘 중 하나만 통과해도(OR) 해제된다.
     @Published private(set) var palmConsecutive: Int = 0
     @Published private(set) var lastPalmScore: Float = 0
-    @Published var isEnabled: Bool = false {
+
+    /// 얼굴/손바닥을 독립적으로 켜고 끌 수 있다 — 손바닥은 라이브니스가 없어서
+    /// 얼굴만 켜고 손바닥은 꺼 두고 싶을 수 있다(그 반대도 마찬가지).
+    @Published var faceUnlockEnabled: Bool = false {
         didSet { if !isEnabled { reset() } }
     }
+    @Published var palmUnlockEnabled: Bool = false {
+        didSet { if !isEnabled { reset() } }
+    }
+    /// 둘 중 하나라도 켜져 있는지 — 잠금 감지·카메라 수명 관리 등 공통 로직에서만 쓴다.
+    /// 실제 인식 게이트는 feed(aligned:)/feedPalm(score:)에서 각자의 플래그를 본다.
+    var isEnabled: Bool { faceUnlockEnabled || palmUnlockEnabled }
 
     private var attemptID = UUID()
     private var injecting = false
@@ -91,7 +100,7 @@ final class UnlockService: ObservableObject {
     // MARK: - 프레임 입력
 
     func feed(aligned: AlignedFaceResult) {
-        guard isEnabled, !injecting, case .waiting = state else { return }
+        guard faceUnlockEnabled, !injecting, case .waiting = state else { return }
         guard ScreenLockMonitor.shared.isLocked else { return }
         guard let embedding = aligned.embedding else { consecutive = 0; return }
 
@@ -137,7 +146,7 @@ final class UnlockService: ObservableObject {
     /// 등록해야만 켜지는 기능이라 기본 상태에선 위험이 없지만, 등록한 순간부터는
     /// 그 손바닥 사진 한 장으로도 뚫릴 수 있다는 뜻이다.
     func feedPalm(score: Float?) {
-        guard isEnabled, !injecting, case .waiting = state else { return }
+        guard palmUnlockEnabled, !injecting, case .waiting = state else { return }
         guard ScreenLockMonitor.shared.isLocked else { return }
         guard let score else { palmConsecutive = 0; return }
         lastPalmScore = score

@@ -228,6 +228,7 @@ struct DebugView: View {
         lastCompareValidRatio = nil
         didAttemptCompare = false
         PalmProfileStore.shared.register(code)
+        app.refreshPalmRegistration()
         DiagnosticLog.write(String(
             format: "palm 등록(실제 잠금해제 반영) validRatio=%.3f gaborThreshold=%.0f",
             code.validRatio, PalmConfig.minGaborResponseMagnitude))
@@ -241,6 +242,7 @@ struct DebugView: View {
         lastCompareValidRatio = nil
         didAttemptCompare = false
         PalmProfileStore.shared.clear()
+        app.refreshPalmRegistration()
         DiagnosticLog.write("palm 등록 삭제됨")
     }
 

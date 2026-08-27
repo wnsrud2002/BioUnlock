@@ -45,8 +45,17 @@ private struct GeneralTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("얼굴로 잠금 해제", isOn: app.unlockEnabled)
-                    .disabled(!app.isReadyToUnlock)
+                Toggle("얼굴로 잠금 해제", isOn: app.faceUnlockEnabled)
+                    .disabled(!app.isReadyForFaceUnlock)
+                Toggle("손바닥으로 잠금 해제", isOn: app.palmUnlockEnabled)
+                    .disabled(!app.isReadyForPalmUnlock)
+                if !app.hasPalmRegistered {
+                    Text("디버그 창에서 손바닥을 먼저 등록해야 켤 수 있습니다.")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                } else if app.palmUnlockEnabled.wrappedValue {
+                    Text("손바닥은 라이브니스(사진 방어)가 없습니다 — 등록된 손바닥 사진 한 장으로도 뚫릴 수 있습니다.")
+                        .font(.system(size: 10)).foregroundStyle(.orange)
+                }
                 Toggle("로그인 시 자동 실행", isOn: $app.launchAtLogin)
             }
 
@@ -183,7 +192,8 @@ private struct SecurityTab: View {
                         Button("삭제") {
                             LoginPasswordStore.clear()
                             app.refreshPassword()
-                            app.unlockEnabled.wrappedValue = false
+                            app.faceUnlockEnabled.wrappedValue = false
+                            app.palmUnlockEnabled.wrappedValue = false
                             note = ""
                         }
                     }

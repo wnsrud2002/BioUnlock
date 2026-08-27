@@ -21,16 +21,25 @@ struct MenuBarView: View {
                 Spacer()
             }
 
-            Toggle("얼굴/손바닥으로 잠금 해제", isOn: app.unlockEnabled)
+            Toggle("얼굴로 잠금 해제", isOn: app.faceUnlockEnabled)
                 .toggleStyle(.switch)
-                .disabled(!app.isReadyToUnlock)
+                .disabled(!app.isReadyForFaceUnlock)
                 .font(.system(size: 12))
+            Toggle("손바닥으로 잠금 해제", isOn: app.palmUnlockEnabled)
+                .toggleStyle(.switch)
+                .disabled(!app.isReadyForPalmUnlock)
+                .font(.system(size: 12))
+            if app.palmUnlockEnabled.wrappedValue {
+                Text("⚠︎ 손바닥은 라이브니스가 없습니다 — 사진으로도 뚫릴 수 있습니다")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+            }
 
-            if !app.isReadyToUnlock {
+            if !app.isReadyForFaceUnlock || !app.isReadyForPalmUnlock {
                 VStack(alignment: .leading, spacing: 2) {
-                    if app.profileNames.isEmpty { requirement("얼굴 등록 필요") }
                     if !app.passwordIsSet { requirement("로그인 비밀번호 저장 필요") }
                     if !app.hasAccessibility { requirement("접근성 권한 필요") }
+                    if app.profileNames.isEmpty { requirement("얼굴 등록 필요(얼굴 잠금 해제용)") }
+                    if !app.hasPalmRegistered { requirement("손바닥 등록 필요(손바닥 잠금 해제용)") }
                 }
             }
 

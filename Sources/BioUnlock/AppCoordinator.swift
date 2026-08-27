@@ -14,6 +14,7 @@ import ServiceManagement
 import SwiftUI
 import AppKit
 import UnlockKit
+import Unlockpalm
 
 @MainActor
 final class AppCoordinator: ObservableObject {
@@ -26,6 +27,9 @@ final class AppCoordinator: ObservableObject {
     @Published private(set) var profileNames: [String] = []
     @Published private(set) var passwordIsSet: Bool = false
     @Published private(set) var hasAccessibility: Bool = false
+    /// PalmProfileStore(세션 메모리)는 그 자체로 Combine 발행자가 아니라서,
+    /// 등록/삭제 직후 DebugView가 refreshPalmRegistration()을 불러 갱신한다.
+    @Published private(set) var hasPalmRegistered: Bool = false
 
     /// 카메라를 항상 켜 둘지. 끄면 잠금·등록·프리뷰 중에만 켜진다.
     /// 항상 켜면 녹색 LED 가 상시 점등하지만 인식이 0.5초 정도 빨라진다.
@@ -89,7 +93,8 @@ final class AppCoordinator: ObservableObject {
     private let defaults = UserDefaults.standard
     private enum Keys {
         static let cameraAlwaysOn = "cameraAlwaysOn"
-        static let unlockEnabled = "unlockEnabled"
+        static let faceUnlockEnabled = "faceUnlockEnabled"
+        static let palmUnlockEnabled = "palmUnlockEnabled"
         static let antiSpoofEnabled = "antiSpoofEnabled"
         static let unlockIdentityThreshold = "unlockIdentityThreshold"
         static let livenessThreshold = "livenessThreshold"
@@ -99,11 +104,15 @@ final class AppCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var permissionTimer: Timer?
 
-    /// unlock.isEnabled 는 하위 객체의 값이라 뷰에서 직접 바인딩할 수 없다.
+    /// unlock의 값들은 하위 객체 소유라 뷰에서 직접 바인딩할 수 없다.
     /// 코디네이터를 통해 읽고 쓰게 하고, 변경 알림은 아래에서 위로 전달한다.
-    var unlockEnabled: Binding<Bool> {
-        Binding(get: { self.unlock.isEnabled },
-                set: { self.unlock.isEnabled = $0 })
+    var faceUnlockEnabled: Binding<Bool> {
+        Binding(get: { self.unlock.faceUnlockEnabled },
+                set: { self.unlock.faceUnlockEnabled = $0 })
+    }
+    var palmUnlockEnabled: Binding<Bool> {
+        Binding(get: { self.unlock.palmUnlockEnabled },
+                set: { self.unlock.palmUnlockEnabled = $0 })
     }
 
     private init() {
@@ -130,10 +139,12 @@ final class AppCoordinator: ObservableObject {
             self?.refreshProfiles()
         }
         refreshProfiles()
+        refreshPalmRegistration()
         passwordIsSet = LoginPasswordStore.isSet
         hasAccessibility = UnlockService.hasAccessibilityPermission(prompt: false)
 
-        unlock.isEnabled = defaults.bool(forKey: Keys.unlockEnabled)
+        unlock.faceUnlockEnabled = defaults.bool(forKey: Keys.faceUnlockEnabled)
+        unlock.palmUnlockEnabled = defaults.bool(forKey: Keys.palmUnlockEnabled)
 
         // 하위 객체의 변경을 코디네이터 구독자에게 그대로 전달한다.
         unlock.objectWillChange
@@ -168,12 +179,13 @@ final class AppCoordinator: ObservableObject {
             }
             .store(in: &cancellables)
 
-        unlock.$isEnabled
-            .removeDuplicates()
-            .sink { [weak self] enabled in
+        Publishers.CombineLatest(unlock.$faceUnlockEnabled, unlock.$palmUnlockEnabled)
+            .removeDuplicates(by: { $0 == $1 })
+            .sink { [weak self] face, palm in
                 guard let self else { return }
-                self.defaults.set(enabled, forKey: Keys.unlockEnabled)
-                self.setReason(.locked, enabled && ScreenLockMonitor.shared.isLocked)
+                self.defaults.set(face, forKey: Keys.faceUnlockEnabled)
+                self.defaults.set(palm, forKey: Keys.palmUnlockEnabled)
+                self.setReason(.locked, (face || palm) && ScreenLockMonitor.shared.isLocked)
             }
             .store(in: &cancellables)
 
@@ -241,12 +253,19 @@ final class AppCoordinator: ObservableObject {
         passwordIsSet = LoginPasswordStore.isSet
     }
 
+    func refreshPalmRegistration() {
+        hasPalmRegistered = !PalmProfileStore.shared.isEmpty
+    }
+
     func requestAccessibility() {
         _ = UnlockService.hasAccessibilityPermission(prompt: true)
     }
 
-    var isReadyToUnlock: Bool {
+    var isReadyForFaceUnlock: Bool {
         !profileNames.isEmpty && passwordIsSet && hasAccessibility
+    }
+    var isReadyForPalmUnlock: Bool {
+        hasPalmRegistered && passwordIsSet && hasAccessibility
     }
 
     func resetSecurityDefaults() {
@@ -261,7 +280,8 @@ final class AppCoordinator: ObservableObject {
     /// 이미 지울 수 있고, 여기 묶어두면 비밀번호만 초기화하려다 등록된 얼굴까지
     /// 실수로 날릴 위험이 있다(실제로 이 일이 있었다).
     func resetPasswordAndUnlock() {
-        unlockEnabled.wrappedValue = false
+        faceUnlockEnabled.wrappedValue = false
+        palmUnlockEnabled.wrappedValue = false
         LoginPasswordStore.clear()
         refreshPassword()
         DiagnosticLog.write("비밀번호·잠금 설정 초기화 실행됨")
