@@ -5,18 +5,20 @@
 
 import SwiftUI
 import UnlockKit
+import Unlockpalm
 
 struct SettingsView: View {
     @ObservedObject var app: AppCoordinator
     @State private var selectedTab: Tab = .general
     @State private var windowVisible = true
 
-    private enum Tab { case general, face, security }
+    private enum Tab { case general, face, palm, security }
 
     var body: some View {
         TabView(selection: $selectedTab) {
             GeneralTab(app: app).tag(Tab.general).tabItem { Label("일반", systemImage: "gear") }
             FaceTab(app: app).tag(Tab.face).tabItem { Label("얼굴", systemImage: "faceid") }
+            PalmTab(app: app).tag(Tab.palm).tabItem { Label("손바닥", systemImage: "hand.raised") }
             SecurityTab(app: app).tag(Tab.security).tabItem { Label("보안", systemImage: "lock") }
         }
         .frame(width: 520, height: 460)
@@ -25,15 +27,19 @@ struct SettingsView: View {
             updateCameraReason()
         })
         .onAppear { updateCameraReason() }
-        .onDisappear { app.setReason(.faceTab, false) }
+        .onDisappear {
+            app.setReason(.faceTab, false)
+            app.setReason(.palmTab, false)
+        }
         .onChange(of: selectedTab) { _ in updateCameraReason() }
     }
 
-    /// 카메라는 '얼굴' 탭이 실제로 보이고 있을 때만 켠다.
+    /// 카메라는 '얼굴'/'손바닥' 탭이 실제로 보이고 있을 때만 켠다.
     /// 탭이 아니라 창 존재만으로 켰다면, 사용자가 '일반' 탭을 보고 있어도
     /// 창을 열어둔 것만으로 카메라가 계속 돌게 된다.
     private func updateCameraReason() {
         app.setReason(.faceTab, windowVisible && selectedTab == .face)
+        app.setReason(.palmTab, windowVisible && selectedTab == .palm)
     }
 }
 
@@ -50,7 +56,7 @@ private struct GeneralTab: View {
                 Toggle("손바닥으로 잠금 해제", isOn: app.palmUnlockEnabled)
                     .disabled(!app.isReadyForPalmUnlock)
                 if !app.hasPalmRegistered {
-                    Text("디버그 창에서 손바닥을 먼저 등록해야 켤 수 있습니다.")
+                    Text("'손바닥' 탭에서 먼저 등록해야 켤 수 있습니다.")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 } else if app.palmUnlockEnabled.wrappedValue {
                     Text("손바닥은 라이브니스(사진 방어)가 없습니다 — 등록된 손바닥 사진 한 장으로도 뚫릴 수 있습니다.")
@@ -159,6 +165,95 @@ private struct FaceTab: View {
             Spacer()
         }
         .padding()
+    }
+}
+
+// MARK: - 손바닥 등록
+
+private struct PalmTab: View {
+    @ObservedObject var app: AppCoordinator
+    @State private var registeredThumb: CGImage?
+    @State private var note: String?
+
+    private var camera: CameraController { app.camera }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            CameraPreviewView(camera: camera)
+                .frame(height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if let p = camera.palm {
+                HStack(spacing: 8) {
+                    statusChip("손바닥 방향", p.isPalmFacing)
+                    statusChip("거리 적당", p.passesSourcePixelGate)
+                }
+                Button("이 손 등록") { register(p) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!(p.isPalmFacing && p.passesSourcePixelGate))
+            } else {
+                Text("카메라에 손바닥을 펴서 비춰주세요 (25~40cm 정도)")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+
+            if let note {
+                Text(note).font(.system(size: 11)).foregroundStyle(.green)
+            }
+
+            Divider()
+
+            if app.hasPalmRegistered {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text("손바닥 등록됨")
+                    if let thumb = registeredThumb {
+                        Image(thumb, scale: 1, label: Text("등록됨"))
+                            .resizable().frame(width: 40, height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    Spacer()
+                    Button("삭제") { clear() }
+                }
+            } else {
+                Text("등록된 손바닥이 없습니다").foregroundStyle(.secondary).font(.system(size: 11))
+            }
+
+            Text("⚠️ 라이브니스(사진 방어)가 없습니다 — 등록된 손바닥 사진 한 장으로도 잠금이 풀릴 수 있습니다. 임계값(0.73)도 본인 양손 10회 테스트로만 잡은 값이라 다른 사람 손을 완전히 막는다는 보장이 없습니다.")
+                .font(.system(size: 10)).foregroundStyle(.orange)
+
+            Spacer()
+        }
+        .padding()
+    }
+
+    private func statusChip(_ label: String, _ ok: Bool) -> some View {
+        Text(label)
+            .font(.system(size: 10, weight: .medium))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(ok ? Color.green.opacity(0.25) : Color.red.opacity(0.2))
+            .foregroundStyle(ok ? Color.green : Color.red)
+            .clipShape(Capsule())
+    }
+
+    private func register(_ p: AlignedPalmResult) {
+        let luma = FacePreprocessor.luma(from: p.pixels, count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
+        guard let code = PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize) else {
+            note = "등록 실패 — 다시 시도해 주세요"
+            return
+        }
+        PalmProfileStore.shared.register(code)
+        registeredThumb = p.roi
+        app.refreshPalmRegistration()
+        note = "등록 완료"
+        DiagnosticLog.write(String(format: "palm 등록(설정 탭) validRatio=%.3f", code.validRatio))
+    }
+
+    private func clear() {
+        PalmProfileStore.shared.clear()
+        registeredThumb = nil
+        app.refreshPalmRegistration()
+        note = nil
+        DiagnosticLog.write("palm 등록 삭제됨(설정 탭)")
     }
 }
 

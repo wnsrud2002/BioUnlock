@@ -14,11 +14,8 @@ import Unlockpalm
 struct DebugView: View {
     @ObservedObject var app: AppCoordinator
     @State private var savedNote: String?
-    /// 세션 안에서만 유지되는 테스트용 등록 — 암호화 저장(PalmProfileStore)은
-    /// 아직 없다. "이 손금 방식이 사람을 구분할 수 있는가"만 여기서 확인한다.
-    @State private var registeredPalmCode: PalmCode?
-    @State private var registeredPalmThumb: CGImage?
-    @State private var registeredValidRatio: Float?
+    /// 등록은 설정 → 손바닥 탭에서 한다(PalmProfileStore.shared 하나뿐이라
+    /// 여기선 그 저장소를 그대로 대조해 보기만 한다).
     @State private var lastMatchScore: Float?
     @State private var lastCompareValidRatio: Float?
     /// 비교를 시도했는지(점수가 nil이어도 "아직 안 눌러봄"과 "눌렀는데 실패"를 구분하려고).
@@ -69,7 +66,7 @@ struct DebugView: View {
                 section("실물 판정") { livenessPanel }
                 section("인증") { verifyPanel }
                 section("포즈 버킷") { bucketList() }
-                section("손바닥 (개발중 · 로드맵 05번)") { palmPanel }
+                section("손바닥 (진단 · 등록은 설정 탭에서)") { palmPanel }
             }
             .padding(14)
         }
@@ -126,19 +123,16 @@ struct DebugView: View {
 
     // MARK: - 손바닥 (로드맵 05~10번)
     //
-    // "이 손 등록"은 이제 화면 잠금 해제에도 실제로 쓰인다(PalmProfileStore.shared —
-    // 세션 메모리에만 있고 앱을 끄면 사라진다. 암호화 영구 저장은 아직 없다).
-    // 얼굴과 OR 조건이라 등록하는 순간부터 이 손으로도 잠금이 풀린다.
-    // 라이브니스가 없어 사진 한 장으로도 뚫릴 수 있다 — 등록 자체가 그 위험을
-    // 받아들이는 행위라는 뜻이다.
+    // 등록은 설정 → 손바닥 탭에서 한다. 여기는 진단 전용 — 21점 검출, 손바닥/손등
+    // 부호, Gabor 응답 임계값 튜닝, 그리고 등록된 것과 현재 프레임의 대조 점수를
+    // 확인한다. PalmProfileStore.shared는 세션 메모리에만 있고(암호화 영구 저장은
+    // 아직 없음) 얼굴과 OR 조건이라, 등록하는 순간부터 라이브니스 없이 그 손으로
+    // 잠금이 풀린다는 걸 여기서도 다시 확인할 수 있다.
 
     @ViewBuilder
     private var palmPanel: some View {
         if let p = camera.palm {
-            HStack(spacing: 8) {
-                palmThumb(p.roi, caption: "현재")
-                if let thumb = registeredPalmThumb { palmThumb(thumb, caption: "등록됨") }
-            }
+            palmThumb(p.roi, caption: "현재")
             row("손", p.chirality == .right ? "오른손" : (p.chirality == .left ? "왼손" : "?"))
             HStack(spacing: 6) {
                 chip(p.isPalmFacing ? "손바닥" : "손등(또는 부호 반대)", p.isPalmFacing)
@@ -150,7 +144,7 @@ struct DebugView: View {
             chip("ROI 픽셀 게이트", p.passesSourcePixelGate)
 
             // Gabor 응답 임계값이 실측 전이라 처음엔 거의 확실히 안 맞는다.
-            // 재빌드 없이 여기서 바로 조정해가며 등록/비교를 반복해볼 수 있게 했다.
+            // 재빌드 없이 여기서 바로 조정해가며 비교를 반복해볼 수 있게 했다.
             HStack(spacing: 6) {
                 Text("응답 임계값 \(String(format: "%.0f", PalmConfig.minGaborResponseMagnitude))")
                     .font(.system(size: 10))
@@ -160,20 +154,16 @@ struct DebugView: View {
                 Button("+5") { PalmConfig.minGaborResponseMagnitude += 5 }.font(.system(size: 10))
             }
 
-            HStack(spacing: 6) {
-                Button("이 손 등록 (실제 잠금해제에 반영됨)") { registerPalm(p) }.font(.system(size: 10))
-                Button("지금 비교") { comparePalm(p) }
-                    .font(.system(size: 10))
-                    .disabled(registeredPalmCode == nil)
-                if registeredPalmCode != nil {
-                    Button("등록 지우기") { clearRegisteredPalm() }
-                        .font(.system(size: 10)).foregroundStyle(.red)
-                }
+            // 등록은 설정 → 손바닥 탭에서 한다. 여기서는 지금 등록돼 있는 것과
+            // 현재 프레임을 그대로 대조해 볼 뿐이다(실제 잠금해제와 같은 저장소).
+            Button("지금 비교") { comparePalm(p) }
+                .font(.system(size: 10))
+                .disabled(!app.hasPalmRegistered)
+            if !app.hasPalmRegistered {
+                Text("등록된 손바닥이 없습니다 — 설정 → 손바닥 탭에서 먼저 등록하세요")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
 
-            if let ratio = registeredValidRatio {
-                row("등록 코드 유효 픽셀", String(format: "%.1f%%", ratio * 100))
-            }
             if let ratio = lastCompareValidRatio {
                 row("비교 코드 유효 픽셀", String(format: "%.1f%%", ratio * 100))
             }
@@ -189,7 +179,7 @@ struct DebugView: View {
             } else if didAttemptCompare {
                 // 0점이 아니라 이 문구가 떠야 정상이다 — 0점은 "다른 손"으로
                 // 오해하기 딱 좋다. 위 유효 픽셀 비율이 낮으면 "응답 임계값"을
-                // -5로 몇 번 눌러 낮추고 다시 등록·비교해볼 것.
+                // -5로 몇 번 눌러 낮추고 다시 비교해볼 것.
                 Text("비교 불가 — 겹치는 유효 픽셀 부족. 응답 임계값을 낮춰보세요")
                     .font(.system(size: 11)).foregroundStyle(.orange)
             }
@@ -211,51 +201,16 @@ struct DebugView: View {
 
     /// CompCode 인코딩은 무거워서(9×9 커널 × 6방향 컨볼루션) 프레임마다 돌리지 않고
     /// 버튼을 누른 이 순간의 ROI 한 장에서만 계산한다.
-    private func encodePalm(_ p: AlignedPalmResult) -> PalmCode? {
-        let luma = FacePreprocessor.luma(from: p.pixels, count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
-        return PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize)
-    }
-
-    private func registerPalm(_ p: AlignedPalmResult) {
-        guard let code = encodePalm(p) else {
-            DiagnosticLog.write("palm 등록 실패 — 인코딩 불가")
-            return
-        }
-        registeredPalmCode = code
-        registeredPalmThumb = p.roi
-        registeredValidRatio = code.validRatio
-        lastMatchScore = nil
-        lastCompareValidRatio = nil
-        didAttemptCompare = false
-        PalmProfileStore.shared.register(code)
-        app.refreshPalmRegistration()
-        DiagnosticLog.write(String(
-            format: "palm 등록(실제 잠금해제 반영) validRatio=%.3f gaborThreshold=%.0f",
-            code.validRatio, PalmConfig.minGaborResponseMagnitude))
-    }
-
-    private func clearRegisteredPalm() {
-        registeredPalmCode = nil
-        registeredPalmThumb = nil
-        registeredValidRatio = nil
-        lastMatchScore = nil
-        lastCompareValidRatio = nil
-        didAttemptCompare = false
-        PalmProfileStore.shared.clear()
-        app.refreshPalmRegistration()
-        DiagnosticLog.write("palm 등록 삭제됨")
-    }
-
     private func comparePalm(_ p: AlignedPalmResult) {
-        guard let registeredPalmCode, let code = encodePalm(p) else { return }
+        let luma = FacePreprocessor.luma(from: p.pixels, count: PalmAligner.roiOutputSize * PalmAligner.roiOutputSize)
+        guard let code = PalmMatcher.encode(luma: luma, size: PalmAligner.roiOutputSize) else { return }
         didAttemptCompare = true
         lastCompareValidRatio = code.validRatio
-        lastMatchScore = PalmMatcher.score(registeredPalmCode, code)
+        lastMatchScore = PalmProfileStore.shared.verify(code)
         DiagnosticLog.write(String(
-            format: "palm 비교 score=%@ validRatio=등록%.3f/현재%.3f threshold=%.2f gaborThreshold=%.0f",
+            format: "palm 비교 score=%@ validRatio=%.3f threshold=%.2f gaborThreshold=%.0f",
             lastMatchScore.map { String(format: "%.4f", $0) } ?? "nil(비교불가)",
-            registeredValidRatio ?? -1, code.validRatio,
-            PalmConfig.matchThreshold, PalmConfig.minGaborResponseMagnitude))
+            code.validRatio, PalmConfig.matchThreshold, PalmConfig.minGaborResponseMagnitude))
     }
 
     // MARK: - 인증

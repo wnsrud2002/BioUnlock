@@ -87,7 +87,7 @@ final class AppCoordinator: ObservableObject {
     /// 카메라를 켜 둘 이유들. 하나라도 있으면 켠다.
     /// 창별로 분리한다. 예전엔 설정창·디버그창이 같은 .window 를 공유해서,
     /// 한 창이 닫혀도 다른 창이 열려 있으면 몰라도 되는데 반대로 상태가 꼬일 수 있었다.
-    enum CameraReason: Hashable { case alwaysOn, debugWindow, faceTab, enrolling, locked }
+    enum CameraReason: Hashable { case alwaysOn, debugWindow, faceTab, palmTab, enrolling, locked }
     private var reasons: Set<CameraReason> = []
 
     private let defaults = UserDefaults.standard
