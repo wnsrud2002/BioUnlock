@@ -38,7 +38,15 @@ public enum PalmAligner {
     /// 정준 프레임 안에서 실제로 매칭에 쓰는 팜프린트 영역.
     /// 손목 주름(변형 심함)과 손가락 밑동(가림 잦음)을 뺀 안쪽.
     public static let roiInCanonical = CGRect(x: 32, y: 32, width: 128, height: 128)
-    public static let roiOutputSize = 128
+
+    /// ROI 를 몇 픽셀로 뽑을지. roiInCanonical(128 정준 단위)과 별개다 —
+    /// 128 단위 영역을 256px 로 뽑으면 2배 초과표본이 된다.
+    ///
+    /// 128 이던 것을 256 으로 올렸다. 8cm 근접 촬영에서 손바닥이 센서에 1280px 로
+    /// 잡히는데 128px 로 줄이면 10:1 로 뭉개져, 개인을 구분하는 잔주름 그물망이
+    /// 통째로 사라졌다(2026-08-28 실측). 큰 손금은 사람마다 비슷해서 그것만 남으면
+    /// 타인 0.69 / 본인 0.72 처럼 구분이 안 된다.
+    public static let roiOutputSize = 256
 
     /// 관측된 5점 집합들로 그 사용자 전용 정준 좌표를 만든다.
     ///
@@ -71,6 +79,11 @@ public enum PalmAligner {
     }
 
     /// 원본 프레임에서 정렬된 정사각 손바닥 ROI를 잘라낸다.
+    ///
+    /// 반환 이미지의 extent 는 항상 (0, 0, roiOutputSize, roiOutputSize) 다.
+    /// 호출부가 그 가정으로 비트맵을 렌더링하므로 이 계약을 깨면 안 된다
+    /// (PalmAlignerROITests 가 잠가 둔다). 예전에는 roiInCanonical 원점(32,32)
+    /// 그대로 돌려줘서 호출부가 (0,0)부터 읽었고, ROI 의 43%가 빈 픽셀이었다.
     public static func align(image: CIImage, points: PalmPoints, flipLeftHand: Bool,
                              canonical: [CGPoint]) -> CIImage? {
         let extent = image.extent
@@ -81,9 +94,19 @@ public enum PalmAligner {
         let base = flipLeftHand
             ? image.transformed(by: CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -extent.maxX, y: 0))
             : image
+        let side = CGFloat(roiOutputSize)
         return base.clampedToExtent()
-            .transformed(by: t)
-            .cropped(to: roiInCanonical)
+            .transformed(by: t.concatenating(roiToOutput))
+            .cropped(to: CGRect(x: 0, y: 0, width: side, height: side))
+    }
+
+    /// 정준 프레임의 roiInCanonical 영역을 (0,0,roiOutputSize,roiOutputSize)로 옮긴다.
+    /// 이동 먼저, 그다음 확대 — 순서를 바꾸면 원점이 어긋난다.
+    private static var roiToOutput: CGAffineTransform {
+        let s = CGFloat(roiOutputSize) / roiInCanonical.width
+        return CGAffineTransform(translationX: -roiInCanonical.origin.x,
+                                 y: -roiInCanonical.origin.y)
+            .concatenating(CGAffineTransform(scaleX: s, y: s))
     }
 
     /// 정렬 품질 자가진단(잔차) + ROI 원본 픽셀 수(스케일 역산)를 한 번에 낸다.

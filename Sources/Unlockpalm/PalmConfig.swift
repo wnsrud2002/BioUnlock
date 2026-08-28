@@ -34,8 +34,15 @@ public enum PalmConfig {
     /// 디버그 오버레이에 표시할 전체 21점의 최소 신뢰도(정렬용 5점보다 느슨하게).
     public static var minOverlayConfidence: Float = 0.3
 
-    /// ROI 원본 픽셀 수 하한. 이보다 작으면 손이 너무 멀어 텍스처 정보가 없다.
-    public static var minSourcePixels: CGFloat = 160
+    /// ROI 가 원본 센서에서 몇 픽셀을 차지했는지의 하한.
+    ///
+    /// 160 → 450 으로 올렸다. ROI 출력이 256px 인데 원본이 그보다 적으면
+    /// 업샘플링일 뿐 새 정보가 없다. 450 은 대략 15cm 이내에 해당하고,
+    /// 요청 사양의 Bin A 하한(w_px 450)과도 맞는다.
+    ///
+    /// 손금은 0.5mm 폭이라 2px 이상으로 담으려면 손바닥 폭이 450px 넘게
+    /// 잡혀야 한다 — 얼굴 위치(25~40cm)에서는 원리적으로 불가능하다.
+    public static var minSourcePixels: CGFloat = 450
 
     /// 정렬 잔차(픽셀) 상한. 5점이 유사변환으로 설명되지 않을수록 커진다 —
     /// 크면 ROI가 엉뚱한 데를 잘라서 CompCode가 통째로 쓰레기가 된다.
