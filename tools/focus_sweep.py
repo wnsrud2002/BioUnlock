@@ -31,13 +31,23 @@
 
 실행
 ----
-    tools/.venv/bin/python tools/focus_sweep.py
+    tools/.venv/bin/python tools/focus_sweep.py            # 카메라 선택 화면부터
+    tools/.venv/bin/python tools/focus_sweep.py --device 1 # 인덱스를 아는 경우
 
 처음 실행하면 macOS 가 카메라 권한을 묻는다(터미널 앱에 부여된다).
+
+!! 아이폰(Continuity Camera) 주의 !!
+아이폰이 근처에 있으면 macOS 가 그걸 카메라 목록에 끼워 넣고, 종종 인덱스 0
+(기본값)을 차지한다. 아이폰은 오토포커스라 접사가 잘 되므로 그걸로 재면
+"근접 촬영 가능"이라는 잘못된 결론이 나온다 — 실제 앱은 맥북 내장 카메라를
+쓴다(CameraController 가 .builtInWideAngleCamera 의 .front 를 고른다).
+그래서 반드시 '맥북 내장 카메라'를 골라야 한다. 선택 화면에서 눈으로 확인할 것.
 """
 
+import argparse
 import csv
 import os
+import subprocess
 import sys
 from datetime import datetime
 
@@ -82,19 +92,98 @@ def center_roi(frame):
     return frame[y0:y0 + ROI_SIDE, x0:x0 + ROI_SIDE]
 
 
-def open_camera():
-    cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+def system_camera_names():
+    """macOS 가 인식한 카메라 이름들. cv2 인덱스와 순서가 보장되진 않아 힌트로만 쓴다."""
+    try:
+        out = subprocess.run(["system_profiler", "SPCameraDataType"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return []
+    names = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        # 장치 이름은 4칸 들여쓰기 + 콜론으로 끝난다. 하위 속성은 6칸이라 걸러진다.
+        if stripped.endswith(":") and len(line) - len(line.lstrip()) == 4:
+            names.append(stripped[:-1])
+    return names
+
+
+def open_camera(index):
+    cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
     if not cap.isOpened():
-        sys.exit(
-            "카메라를 열 수 없습니다.\n"
-            "시스템 설정 > 개인정보 보호와 보안 > 카메라 에서 터미널(또는 사용 중인 앱)에\n"
-            "권한이 있는지 확인하세요."
-        )
+        return None
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
     for _ in range(WARMUP_FRAMES):
         cap.read()
     return cap
+
+
+def choose_camera(max_index=4):
+    """카메라를 하나씩 보여주고 사용자가 고르게 한다.
+
+    cv2 는 장치 이름을 주지 않으므로 인덱스로만 접근해야 한다. 아이폰이 인덱스 0을
+    차지하는 경우가 흔해 자동 선택은 위험하다 — 눈으로 보고 고르는 게 유일하게
+    확실한 방법이다.
+    """
+    names = system_camera_names()
+    if names:
+        print("macOS 가 인식한 카메라:", ", ".join(names))
+        print("(순서가 아래 인덱스와 일치한다는 보장은 없습니다 — 화면을 보고 고르세요)\n")
+
+    available = []
+    for i in range(max_index + 1):
+        cap = cv2.VideoCapture(i, cv2.CAP_AVFOUNDATION)
+        if cap.isOpened():
+            ok, _ = cap.read()
+            if ok:
+                available.append(i)
+        cap.release()
+
+    if not available:
+        sys.exit(
+            "카메라를 열 수 없습니다.\n"
+            "시스템 설정 > 개인정보 보호와 보안 > 카메라 에서 터미널(또는 사용 중인 앱)에\n"
+            "권한이 있는지 확인하세요."
+        )
+    if len(available) == 1:
+        print(f"카메라가 하나뿐입니다 (인덱스 {available[0]}) — 그대로 사용합니다.\n")
+        return available[0]
+
+    print(f"카메라 {len(available)}개 발견: {available}")
+    print("각각 미리보기를 띄웁니다. 맥북 내장 카메라가 보이면 SPACE, 아니면 N 으로 넘기세요.")
+    print("!! 아이폰 화면이 보이면 그건 Continuity Camera 입니다. 반드시 N 으로 넘기세요.\n")
+
+    for idx in available:
+        cap = open_camera(idx)
+        if cap is None:
+            continue
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                text = f"camera index {idx}   SPACE=use this   N=next   Q=quit"
+                cv2.putText(frame, text, (20, 44),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.putText(frame, text, (20, 44),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.imshow("select camera", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord(' '):
+                    cv2.destroyWindow("select camera")
+                    print(f"인덱스 {idx} 선택됨\n")
+                    return idx
+                if key in (ord('n'), ord('N')):
+                    break
+                if key in (ord('q'), ord('Q'), 27):
+                    cv2.destroyWindow("select camera")
+                    sys.exit("선택하지 않고 종료했습니다.")
+        finally:
+            cap.release()
+
+    cv2.destroyWindow("select camera")
+    sys.exit("카메라를 선택하지 않았습니다. --device 로 직접 지정할 수도 있습니다.")
 
 
 def draw_hud(frame, distance_cm, live_sharp, done, total):
@@ -224,16 +313,27 @@ def verdict(rows):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="맥북 카메라 초점 스윕 진단")
+    parser.add_argument("--device", type=int, default=None,
+                        help="카메라 인덱스를 직접 지정(생략하면 선택 화면)")
+    args = parser.parse_args()
+
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_dir = os.path.join(OUT_DIR, stamp)
     os.makedirs(session_dir, exist_ok=True)
 
     print(__doc__.split("설치")[0].strip())
-    print("\n손바닥을 초록 사각형 안을 채우도록 두고, 표시된 거리에서 SPACE 를 누르세요.")
+    print()
+
+    device = args.device if args.device is not None else choose_camera()
+
+    print("손바닥을 초록 사각형 안을 채우도록 두고, 표시된 거리에서 SPACE 를 누르세요.")
     print("측정을 건너뛰려면 S, 중단하려면 Q.\n")
 
-    cap = open_camera()
+    cap = open_camera(device)
+    if cap is None:
+        sys.exit(f"인덱스 {device} 카메라를 열 수 없습니다.")
     rows = []
     try:
         for i, cm in enumerate(DISTANCES_CM):
