@@ -14,3 +14,6 @@ tools/.venv/
 # 안티스푸핑 모델 변환용으로 clone 한 저장소. 자체 .git 이 있어 중첩 저장소가 된다.
 # tools/setup_antispoof_source.sh 로 다시 clone 한다.
 tools/sf/
+
+# 진단 도구 실행 시 생기는 파이썬 캐시
+__pycache__/
