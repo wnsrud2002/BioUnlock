@@ -183,7 +183,7 @@ private struct PalmTab: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             switch session.step {
-            case .measuring, .collecting:
+            case .collecting:
                 collectingView
             case .idle, .done, .failed:
                 readyView
@@ -192,7 +192,7 @@ private struct PalmTab: View {
             Divider()
             registeredView
 
-            Text("⚠️ 라이브니스(사진 방어)가 없습니다 — 등록된 손바닥 사진 한 장으로도 잠금이 풀릴 수 있습니다. 임계값(0.73)도 본인 양손 10회 테스트로만 잡은 값이라 다른 사람 손을 완전히 막는다는 보장이 없습니다.")
+            Text("⚠️ 라이브니스(사진 방어)가 없습니다 — 등록된 손금 사진 한 장으로도 잠금이 풀릴 수 있습니다. 임계값도 아직 타인 데이터로 검증되지 않았습니다.")
                 .font(.system(size: 10)).foregroundStyle(.orange)
 
             Spacer()
@@ -205,11 +205,9 @@ private struct PalmTab: View {
 
     private var collectingView: some View {
         VStack(spacing: 6) {
-            Text("손바닥을 펴고 천천히 움직여 주세요")
+            Text("손바닥을 카메라에 최대한 가까이")
                 .font(.system(size: 14, weight: .semibold))
-            Text(session.phaseLabel)
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            Text("각도를 조금씩 바꾸면 인식률이 올라갑니다")
+            Text("손금이 화면을 꽉 채우도록 (5~10cm)")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             ProgressView(value: session.progress)
             Text("\(session.collected) / \(PalmConfig.enrollmentSampleCount) 장")
@@ -217,11 +215,6 @@ private struct PalmTab: View {
             if !session.blockedReason.isEmpty {
                 Text(session.blockedReason)
                     .font(.system(size: 10)).foregroundStyle(.orange)
-            }
-            // 방향 부호는 카메라마다 달라 출발점 추정치다. 손바닥을 보이고 있는데도
-            // "손바닥이 카메라를 향하지 않습니다"가 뜨면 여기서 뒤집는다.
-            if session.blockedReason.contains("향하지") {
-                Button("부호 뒤집기") { PalmConfig.palmFacingSign *= -1 }.font(.system(size: 10))
             }
             Button("취소") { session.cancel() }
         }
@@ -233,23 +226,20 @@ private struct PalmTab: View {
     private var readyView: some View {
         if let p = camera.palm {
             HStack(spacing: 8) {
-                statusChip("손바닥 방향", p.isPalmFacing)
-                statusChip("거리 적당", p.passesSourcePixelGate)
-                statusChip("정렬 안정", p.passesAlignmentGate)
-            }
-            if !p.isPalmFacing {
-                HStack(spacing: 6) {
-                    Text("분명 손바닥을 보이고 있다면:").font(.system(size: 10)).foregroundStyle(.secondary)
-                    Button("부호 뒤집기") { PalmConfig.palmFacingSign *= -1 }.font(.system(size: 10))
+                palmThumb(p.roiImage)
+                VStack(alignment: .leading, spacing: 4) {
+                    statusChip(String(format: "살색 %.0f%%", p.skinFraction * 100), p.passesSkinGate)
+                    statusChip(String(format: "손금 텍스처 %.0f%%", p.salience * 100), p.passesTextureGate)
+                    Text(String(format: "회전 보정 %+.1f도", p.rotationDegrees))
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
-            if !p.passesSourcePixelGate {
-                Text(String(format: "손을 더 가까이(현재 %.0fpx, 필요 %.0fpx 이상)",
-                            p.sourcePixels, PalmConfig.minSourcePixels))
+            if !p.passesAllGates {
+                Text("손바닥을 카메라에 더 가까이 대세요 — 손금이 화면을 채워야 합니다")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         } else {
-            Text("카메라에 손바닥을 펴서 비춰주세요 (25~40cm 정도)")
+            Text("손바닥을 카메라에 가까이 대주세요 (5~10cm)")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
 
@@ -264,6 +254,17 @@ private struct PalmTab: View {
         }
     }
 
+    /// 실제로 인코딩되는 그림을 보여준다 — 손금이 안 보이면 등록해도 소용없다.
+    private func palmThumb(_ image: CGImage) -> some View {
+        VStack(spacing: 3) {
+            Image(image, scale: 1, label: Text("손금 ROI"))
+                .resizable().interpolation(.none)
+                .frame(width: 130, height: 130)
+                .background(Color.black)
+            Text("인코딩되는 그림").font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: - 등록 상태
 
     @ViewBuilder
@@ -271,7 +272,7 @@ private struct PalmTab: View {
         if app.hasPalmRegistered {
             HStack {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("손바닥 등록됨 (샘플 \(app.palmSampleCount)장)")
+                Text("손금 등록됨 (샘플 \(app.palmSampleCount)장)")
                 Spacer()
                 Button("삭제") {
                     PalmProfileStore.shared.clear()
@@ -280,7 +281,7 @@ private struct PalmTab: View {
                 }
             }
         } else {
-            Text("등록된 손바닥이 없습니다").foregroundStyle(.secondary).font(.system(size: 11))
+            Text("등록된 손금이 없습니다").foregroundStyle(.secondary).font(.system(size: 11))
         }
     }
 

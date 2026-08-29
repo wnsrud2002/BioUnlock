@@ -2,23 +2,18 @@
 //  PalmEnrollmentSession.swift
 //  BioUnlock
 //
-//  손바닥 등록. 2단계로 나뉜다.
+//  초근접 손금 등록. 손을 카메라 코앞에 대고 있으면 N장을 모은다.
 //
-//    1단계 (형상 측정) — 5점만 모아 이 사용자의 정준 좌표를 재추정한다.
-//    2단계 (코드 수집) — 그 정준 좌표로 자른 ROI에서 CompCode를 뽑는다.
+//  이전에는 2단계(정준 좌표 재추정 → 코드 수집)였다. 그 단계는 랜드마크로 손을
+//  정렬할 때만 의미가 있었는데, 손금이 보이는 거리에서는 Vision 이 손을 아예
+//  못 찾아 랜드마크 경로 자체가 성립하지 않았다(PalmCloseRange 주석 참고).
+//  초근접은 화면 중앙을 그대로 쓰고 회전만 이미지에서 정규화하므로 한 단계로 끝난다.
 //
-//  왜 나눠야 하나: ROI를 어디서 자를지가 정준 좌표에 달려 있다. 좌표를 바꾸면
-//  그 전에 뽑아둔 코드는 다른 곳을 가리키게 되어 전부 무효다. 그래서 좌표를
-//  먼저 확정하고, 그다음에 코드를 뽑는다.
-//
-//  왜 재추정이 필요한가: 기본 정준 좌표는 눈대중 값이라 실제 손 형상과 어긋나
-//  있었다. 잔차가 3.2~5.9px(게이트 6.0)로 상시 높았고, 매 프레임 ROI가 다른
-//  곳을 잘라 같은 손을 같은 세션에서 찍어도 코드가 0.66까지 어긋났다
-//  (2026-08-28 실측 — 다른 사람 손 점수와 구분이 안 되는 수준이었다).
+//  왜 여러 장인가: 참조가 한 장이면 등록 당시 각도에서 조금만 벗어나도 점수가
+//  무너진다. 여러 장 중 '가장 잘 맞는 것'을 쓰면 그 출렁임의 아래쪽 꼬리가 올라간다.
 //
 
 import Foundation
-import CoreGraphics
 import Combine
 import UnlockKit
 import Unlockpalm
@@ -28,8 +23,7 @@ final class PalmEnrollmentSession: ObservableObject {
 
     enum Step: Equatable {
         case idle
-        case measuring          // 1단계: 형상 측정
-        case collecting         // 2단계: 코드 수집
+        case collecting
         case done(Int)
         case failed(String)
     }
@@ -39,138 +33,71 @@ final class PalmEnrollmentSession: ObservableObject {
     /// 게이트에 막혀 샘플을 못 담고 있을 때 그 이유. UI 안내용.
     @Published private(set) var blockedReason: String = ""
 
-    private var shapes: [[CGPoint]] = []
     private var codes: [PalmCode] = []
-    private var calibrated: [CGPoint]?
+    private var rotations: [Float] = []
     private var lastAccepted = Date.distantPast
 
-    var isActive: Bool { step == .measuring || step == .collecting }
+    var isActive: Bool { step == .collecting }
 
     var progress: Double {
         Double(collected) / Double(max(1, PalmConfig.enrollmentSampleCount))
     }
 
-    var phaseLabel: String {
-        switch step {
-        case .measuring:  return "1/2 손 모양 재는 중"
-        case .collecting: return "2/2 손금 담는 중"
-        default:          return ""
-        }
-    }
-
     func start() {
-        shapes.removeAll()
         codes.removeAll()
-        calibrated = nil
+        rotations.removeAll()
         collected = 0
         blockedReason = ""
         lastAccepted = .distantPast
-        // 1단계는 기본 좌표로 게이트만 통과시키면 되므로 임시값을 비운다.
-        PalmProfileStore.shared.endCalibration()
-        step = .measuring
-        DiagnosticLog.write("palm 등록 시작 (1단계 형상 측정, 목표 \(PalmConfig.enrollmentSampleCount)장)")
+        step = .collecting
+        DiagnosticLog.write("palm 등록 시작 (초근접, 목표 \(PalmConfig.enrollmentSampleCount)장)")
     }
 
     func cancel() {
-        shapes.removeAll()
         codes.removeAll()
-        calibrated = nil
+        rotations.removeAll()
         collected = 0
         blockedReason = ""
-        PalmProfileStore.shared.endCalibration()
         step = .idle
     }
 
-    /// 프레임마다 메인 스레드에서 불린다.
-    func feed(_ palm: AlignedPalmResult) {
-        switch step {
-        case .measuring:  feedMeasuring(palm)
-        case .collecting: feedCollecting(palm)
-        default:          return
-        }
-    }
+    /// 손금을 계산한 프레임마다 메인 스레드에서 불린다.
+    func feed(_ palm: PalmFrameResult) {
+        guard step == .collecting else { return }
 
-    // MARK: - 게이트
-
-    /// 통과하면 nil, 막히면 사용자에게 보여줄 이유.
-    private func gateFailure(_ palm: AlignedPalmResult) -> String? {
-        if !palm.isPalmFacing { return "손바닥이 카메라를 향하지 않습니다" }
-        if !palm.passesSourcePixelGate {
-            return String(format: "손을 더 가까이 (%.0f/%.0f px)",
-                          palm.sourcePixels, PalmConfig.minSourcePixels)
-        }
-        if !palm.passesAlignmentGate {
-            return String(format: "손을 평평하게 펴 주세요 (정렬 %.1f px)", palm.residual)
-        }
-        return nil
-    }
-
-    /// 연속 프레임을 그대로 담으면 거의 같은 사진 N장이 된다.
-    private func intervalElapsed() -> Bool {
-        Date().timeIntervalSince(lastAccepted) >= PalmConfig.enrollmentSampleInterval
-    }
-
-    // MARK: - 1단계: 형상 측정
-
-    private func feedMeasuring(_ palm: AlignedPalmResult) {
-        if let reason = gateFailure(palm) { blockedReason = reason; return }
-        blockedReason = ""
-        guard intervalElapsed() else { return }
-
-        lastAccepted = Date()
-        shapes.append(palm.alignmentPointsInImage)
-        collected = shapes.count
-
-        guard shapes.count >= PalmConfig.enrollmentSampleCount else { return }
-        beginSecondPhase()
-    }
-
-    private func beginSecondPhase() {
-        guard let canonical = PalmAligner.calibrated(from: shapes) else {
-            step = .failed("손 모양을 재지 못했습니다 — 다시 시도해 주세요")
+        if !palm.passesSkinGate {
+            blockedReason = String(format: "손바닥이 화면을 덮도록 더 가까이 (살색 %.0f%%)",
+                                   palm.skinFraction * 100)
             return
         }
-        calibrated = canonical
-        PalmProfileStore.shared.beginCalibration(canonical)
-
-        collected = 0
-        lastAccepted = .distantPast
-        step = .collecting
-        DiagnosticLog.write("palm 등록 1단계 완료 — 정준 좌표 재추정됨, 2단계 시작")
-    }
-
-    // MARK: - 2단계: 코드 수집
-
-    private func feedCollecting(_ palm: AlignedPalmResult) {
-        if let reason = gateFailure(palm) { blockedReason = reason; return }
-        blockedReason = ""
-        guard intervalElapsed() else { return }
-
-        guard let code = PalmMatcher.encode(rgba: palm.pixels, size: PalmAligner.roiOutputSize) else {
-            blockedReason = "인코딩 실패"
+        if !palm.passesTextureGate {
+            blockedReason = String(format: "손금이 안 잡힙니다 — 거리·조명을 조절하세요 (텍스처 %.0f%%)",
+                                   palm.salience * 100)
             return
         }
+        blockedReason = ""
+
+        // 연속 프레임을 그대로 담으면 거의 같은 사진 N장이 된다.
+        guard Date().timeIntervalSince(lastAccepted) >= PalmConfig.enrollmentSampleInterval else { return }
 
         lastAccepted = Date()
-        codes.append(code)
+        codes.append(palm.code)
+        rotations.append(palm.rotationDegrees)
         collected = codes.count
-        DiagnosticLog.write(String(format: "palm 샘플 %d/%d validRatio=%.3f residual=%.2f",
+        DiagnosticLog.write(String(format: "palm 샘플 %d/%d 텍스처=%.3f 살색=%.2f 회전=%+.1f도",
                                    collected, PalmConfig.enrollmentSampleCount,
-                                   code.validRatio, palm.residual))
+                                   palm.salience, palm.skinFraction, palm.rotationDegrees))
 
         guard codes.count >= PalmConfig.enrollmentSampleCount else { return }
         finalize()
     }
 
     private func finalize() {
-        guard let canonical = calibrated, !codes.isEmpty else {
+        guard !codes.isEmpty else {
             step = .failed("샘플을 모으지 못했습니다")
-            PalmProfileStore.shared.endCalibration()
             return
         }
-        PalmProfileStore.shared.register(PalmProfile(codes: codes, canonical: canonical))
-        // 저장된 프로필이 같은 좌표를 들고 있으므로 임시값은 비운다.
-        PalmProfileStore.shared.endCalibration()
+        PalmProfileStore.shared.register(PalmProfile(codes: codes))
 
         // 등록 샘플끼리의 일관성이 곧 실사용 점수의 상한이다. 이 값이 임계값보다
         // 낮으면 그 임계값으로는 본인도 절대 통과할 수 없다 — 실제로 그랬다.
@@ -182,8 +109,13 @@ final class PalmEnrollmentSession: ObservableObject {
         }
         let minSim = sims.min() ?? 0
         let avgSim = sims.isEmpty ? 0 : sims.reduce(0, +) / Float(sims.count)
-        DiagnosticLog.write(String(format: "palm 등록 완료 샘플=%d 내부일관성 평균=%.3f 최저=%.3f (임계 %.2f)",
-                                   codes.count, avgSim, minSim, PalmConfig.matchThreshold))
+
+        // 회전 추정이 흔들리면 코드가 서로 어긋난다. 등록 샘플 간 편차를 같이
+        // 남겨서, 일관성이 낮을 때 원인이 회전인지 아닌지 구분할 수 있게 한다.
+        let rotSpread = (rotations.max() ?? 0) - (rotations.min() ?? 0)
+        DiagnosticLog.write(String(
+            format: "palm 등록 완료 샘플=%d 내부일관성 평균=%.3f 최저=%.3f 회전편차=%.1f도 (임계 %.2f)",
+            codes.count, avgSim, minSim, rotSpread, PalmConfig.matchThreshold))
 
         step = .done(codes.count)
     }

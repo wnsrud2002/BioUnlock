@@ -36,27 +36,24 @@ struct AlignedFaceResult {
     var passesEnrollmentGate: Bool { passesAlignment && sharpness >= FaceIDConfig.enrollmentBlurThreshold }
 }
 
-/// 손바닥 정렬·진단 결과. 아직 매칭·라이브니스는 붙지 않은 개발 단계(로드맵 05번)라
-/// 임베딩은 없고, PalmDetector/PalmAligner가 잘 동작하는지 눈으로 확인하는 용도다.
-struct AlignedPalmResult {
-    let roi: CGImage
-    /// roi와 같은 내용의 RGBA8 원본 바이트. CompCode 인코딩(PalmMatcher)은 매 프레임
-    /// 돌리기엔 무거워서 디버그 뷰가 버튼을 누른 시점에만 여기서 루마를 뽑아 쓴다.
-    let pixels: [UInt8]
-    let chirality: VNChirality
-    let isPalmFacing: Bool
-    let residual: CGFloat
-    let sourcePixels: CGFloat
-    /// 디버그 오버레이용 21점 전부(정렬에는 5점만 쓴다).
-    let allJoints: [CGPoint]
-    /// 정렬에 쓴 5점을 이미지 픽셀 좌표로(왼손 반전까지 반영). 등록 1단계에서
-    /// 정준 좌표를 재추정하려면 크롭된 ROI가 아니라 이 원본 형상이 필요하다.
-    let alignmentPointsInImage: [CGPoint]
+/// 초근접 손금 프레임 하나의 결과.
+///
+/// 랜드마크를 쓰지 않는다 — 손금이 보이는 거리에서는 손이 프레임을 넘쳐
+/// Vision HandPose 가 손을 아예 못 찾기 때문이다(실측으로 확인). 화면 중앙을
+/// 그대로 ROI 로 쓰고, 회전만 이미지 구조에서 정규화한다. PalmCloseRange 참고.
+struct PalmFrameResult {
+    /// 화면에 보여줄 ROI(회전 정규화·CLAHE 까지 적용된 상태).
+    let roiImage: CGImage
+    /// 이 프레임에서 뽑은 CompCode. 인코딩은 프레임당 한 번만 한다.
+    let code: PalmCode
+    let skinFraction: Float
+    let salience: Float
+    let rotationDegrees: Float
 
-    var passesSourcePixelGate: Bool { sourcePixels >= PalmConfig.minSourcePixels }
-    var passesAlignmentGate: Bool { residual <= PalmConfig.maxAlignmentResidual }
+    var passesSkinGate: Bool { skinFraction >= PalmConfig.minSkinFraction }
+    var passesTextureGate: Bool { salience >= PalmConfig.minRoiSalience }
     /// 등록·매칭 모두 이 게이트를 통과한 프레임만 쓴다.
-    var passesAllGates: Bool { isPalmFacing && passesSourcePixelGate && passesAlignmentGate }
+    var passesAllGates: Bool { passesSkinGate && passesTextureGate }
 }
 
 final class CameraController: NSObject, ObservableObject {
@@ -66,7 +63,7 @@ final class CameraController: NSObject, ObservableObject {
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var face: FaceFrameInfo?
     @Published private(set) var aligned: AlignedFaceResult?
-    @Published private(set) var palm: AlignedPalmResult?
+    @Published private(set) var palm: PalmFrameResult?
 
     /// 프레임마다 메인 스레드에서 불린다. 등록 세션이 여기에 붙는다.
     var onFrame: ((FaceFrameInfo, AlignedFaceResult) -> Void)?
@@ -75,10 +72,10 @@ final class CameraController: NSObject, ObservableObject {
     /// "이번엔 계산 안 함"을 구분해야 UnlockService의 연속 카운터가 애먼 타이밍에
     /// 리셋되지 않는다).
     var onPalmMatch: ((Float?) -> Void)?
-    /// 손이 잡힌 프레임마다 메인 스레드에서 불린다. 손바닥 등록 세션이 여기에 붙는다.
+    /// 손금을 계산한 프레임마다 메인 스레드에서 불린다. 등록 세션이 여기에 붙는다.
     /// 게이트 판정은 붙는 쪽이 한다 — 등록은 "왜 안 담기는지" 안내해야 해서
     /// 게이트를 통과 못 한 프레임도 봐야 하기 때문이다.
-    var onPalmFrame: ((AlignedPalmResult) -> Void)?
+    var onPalmFrame: ((PalmFrameResult) -> Void)?
     @Published private(set) var fps: Double = 0
     @Published private(set) var status: String = "대기 중"
     @Published private(set) var isRunning: Bool = false
@@ -105,14 +102,6 @@ final class CameraController: NSObject, ObservableObject {
         return r
     }()
 
-    /// visionQueue 전용. 개발 단계(로드맵 05번) — 얼굴과 같은 프레임에서 같이 돌린다.
-    /// 카메라는 하나뿐이라 별도 AVCaptureSession을 새로 만들지 않고 기존 루프에 얹는다.
-    private let handPoseRequest: VNDetectHumanHandPoseRequest = {
-        let r = VNDetectHumanHandPoseRequest()
-        r.maximumHandCount = 1
-        return r
-    }()
-
     // visionQueue 전용. 매 프레임 재할당하면 30fps에서 그대로 비용이 된다.
     private var alignedPixels = [UInt8]()
     private var rawPixels = [UInt8]()
@@ -130,7 +119,7 @@ final class CameraController: NSObject, ObservableObject {
     private var wantsRunning = false
     /// 등록 중에만 TTA를 돌린다. visionQueue 에서만 읽고 쓴다.
     private var enrolling = false
-    /// 손바닥 게이트를 통과한 프레임 수(CompCode 계산 스로틀용). visionQueue 전용.
+    /// 손금 계산 주기를 세는 카운터. visionQueue 전용.
     private var palmGateFrameCount = 0
 
     // MARK: - 권한
@@ -307,9 +296,10 @@ final class CameraController: NSObject, ObservableObject {
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         var info: FaceFrameInfo?
-        var handObservation: VNHumanHandPoseObservation?
         do {
-            try handler.perform([landmarksRequest, handPoseRequest])
+            // 손 검출 요청은 더 이상 돌리지 않는다 — 초근접에서는 손이 프레임을
+            // 넘쳐 Vision 이 손을 못 찾는다(PalmCloseRange 주석 참고).
+            try handler.perform([landmarksRequest])
             // 가장 큰 얼굴 하나만 쓴다.
             if let best = (landmarksRequest.results ?? [])
                 .max(by: { $0.boundingBox.width < $1.boundingBox.width }) {
@@ -324,7 +314,6 @@ final class CameraController: NSObject, ObservableObject {
                         i.keyPoints.noseTipFromMedianLine ? 1 : 0))
                 }
             }
-            handObservation = handPoseRequest.results?.first
         } catch {
             NSLog("[BioUnlock] Vision 실패: \(error.localizedDescription)")
         }
@@ -339,26 +328,19 @@ final class CameraController: NSObject, ObservableObject {
             livenessWindow.removeAll()
         }
 
-        var alignedPalm: AlignedPalmResult?
-        if let handObservation {
-            alignedPalm = makeAlignedPalm(from: ciImage, observation: handObservation)
-        }
-
-        // CompCode 대조는 무거워서(9×9 커널×6방향) 게이트를 통과한 프레임마다도 안 돌리고
-        // 그중 매 N번째만 돌린다. 그 외 프레임은 콜백 자체를 안 불러 연속 카운터를 안 건드린다.
+        // 손금 경로는 무거워서(방향 6개 컨볼루션 + 이동 49회 탐색) 매 프레임 돌리지
+        // 않고 N프레임마다 한 번만 돈다. 인코딩은 여기서 한 번만 하고, 그 결과를
+        // 화면 표시·등록·대조가 모두 공유한다.
+        var palmResult: PalmFrameResult?
         var didCheckPalmMatch = false
         var palmMatchResult: Float?
-        if let alignedPalm, alignedPalm.passesAllGates {
-            palmGateFrameCount += 1
-            if palmGateFrameCount % PalmConfig.matchEveryNFrames == 0 {
+        palmGateFrameCount += 1
+        if palmGateFrameCount % PalmConfig.matchEveryNFrames == 0 {
+            palmResult = makeClosePalm(from: ciImage)
+            if let palmResult, palmResult.passesAllGates {
                 didCheckPalmMatch = true
-                // 전처리는 encode 안에서 한다 — 등록과 같은 경로를 강제하기 위해서다.
-                if let code = PalmMatcher.encode(rgba: alignedPalm.pixels, size: PalmAligner.roiOutputSize) {
-                    palmMatchResult = PalmProfileStore.shared.verify(code)
-                }
+                palmMatchResult = PalmProfileStore.shared.verify(palmResult.code)
             }
-        } else {
-            palmGateFrameCount = 0
         }
 
         var image: CGImage?
@@ -381,9 +363,11 @@ final class CameraController: NSObject, ObservableObject {
             guard let self else { return }
             self.face = info
             self.aligned = alignedResult
-            self.palm = alignedPalm
+            // 손금은 N프레임마다만 계산하므로, 계산 안 한 프레임에서는 직전 값을
+            // 유지한다(nil 로 덮으면 UI 가 깜빡인다).
+            if let palmResult { self.palm = palmResult }
             if let info, let alignedResult { self.onFrame?(info, alignedResult) }
-            if let alignedPalm { self.onPalmFrame?(alignedPalm) }
+            if let palmResult { self.onPalmFrame?(palmResult) }
             if didCheckPalmMatch { self.onPalmMatch?(palmMatchResult) }
             if let image { self.previewImage = image }
             if let newFPS { self.fps = newFPS }
@@ -503,39 +487,54 @@ private extension CameraController {
         return result
     }
 
-    /// 로드맵 05번(PalmDetector + PalmAligner) — 아직 매칭은 없다. 21점 검출과 5점 정렬이
-    /// 실제 카메라·조명에서 안정적인지, palmFacingSign 부호가 맞는지 눈으로 확인하는 단계다.
-    func makeAlignedPalm(from image: CIImage, observation: VNHumanHandPoseObservation) -> AlignedPalmResult? {
-        guard let points = PalmDetector.points(from: observation) else { return nil }
+    /// 초근접 손금 프레임을 만든다. 랜드마크를 쓰지 않는다 — 손금이 보이는
+    /// 거리에서는 손이 프레임을 넘쳐 Vision HandPose 가 손을 못 찾기 때문이다.
+    ///
+    /// 화면 중앙에서 가장 큰 정사각을 잘라 workingSize 로 렌더링하고, 나머지
+    /// (회전 정규화 · CLAHE · 인코딩)는 PalmCloseRange 가 등록·인증 공통으로 처리한다.
+    func makeClosePalm(from image: CIImage) -> PalmFrameResult? {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0 else { return nil }
 
-        let flipLeftHand = observation.chirality == .left
-        // 등록·인증이 반드시 같은 정준 좌표를 봐야 한다. 저장소 한 곳에서만 정한다.
-        let canonical = PalmProfileStore.shared.activeCanonical
-        guard let diag = PalmAligner.diagnostics(points: points, imageExtent: image.extent,
-                                                 flipLeftHand: flipLeftHand, canonical: canonical),
-              let aligned = PalmAligner.align(image: image, points: points,
-                                              flipLeftHand: flipLeftHand, canonical: canonical)
-        else { return nil }
+        let side = min(extent.width, extent.height)
+        let square = CGRect(x: extent.midX - side / 2, y: extent.midY - side / 2,
+                            width: side, height: side)
+        let w = PalmCloseRange.workingSize
+        let scale = CGFloat(w) / side
+        let scaled = image
+            .cropped(to: square)
+            .transformed(by: CGAffineTransform(translationX: -square.origin.x, y: -square.origin.y))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
 
-        let size = PalmAligner.roiOutputSize
-        var pixels = [UInt8](repeating: 0, count: size * size * 4)
-        let bounds = CGRect(x: 0, y: 0, width: CGFloat(size), height: CGFloat(size))
+        var pixels = [UInt8](repeating: 0, count: w * w * 4)
         pixels.withUnsafeMutableBytes { buf in
             guard let base = buf.baseAddress else { return }
-            ciContext.render(aligned, toBitmap: base, rowBytes: size * 4, bounds: bounds,
+            ciContext.render(scaled, toBitmap: base, rowBytes: w * 4,
+                             bounds: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(w)),
                              format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         }
-        guard let roi = Self.makeCGImage(rgba: pixels, size: size) else { return nil }
 
-        return AlignedPalmResult(roi: roi,
-                                 pixels: pixels,
-                                 chirality: observation.chirality,
-                                 isPalmFacing: PalmDetector.isPalmFacing(points, chirality: observation.chirality),
-                                 residual: diag.residual,
-                                 sourcePixels: diag.sourcePixels,
-                                 allJoints: PalmDetector.allPoints(from: observation),
-                                 alignmentPointsInImage: PalmAligner.alignmentPointsInImage(
-                                     points: points, imageExtent: image.extent, flipLeftHand: flipLeftHand))
+        guard let (roi, code) = PalmCloseRange.analyze(rgba: pixels) else { return nil }
+        guard let roiImage = Self.makeGrayCGImage(luma: roi.luma, size: roi.size) else { return nil }
+
+        return PalmFrameResult(roiImage: roiImage,
+                               code: code,
+                               skinFraction: roi.skinFraction,
+                               salience: roi.salience,
+                               rotationDegrees: roi.rotationDegrees)
+    }
+
+    /// 루마 평면을 화면 표시용 회색조 이미지로. 사용자가 실제로 어떤 그림이
+    /// 인코딩되는지 눈으로 봐야 튜닝이 가능하다.
+    static func makeGrayCGImage(luma: [Float], size: Int) -> CGImage? {
+        var bytes = [UInt8](repeating: 0, count: size * size)
+        for i in 0..<(size * size) { bytes[i] = UInt8(max(0, min(255, luma[i]))) }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: size, height: size, bitsPerComponent: 8, bitsPerPixel: 8,
+                       bytesPerRow: size, space: CGColorSpaceCreateDeviceGray(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false,
+                       intent: .defaultIntent)
     }
 
     static func dump(result: AlignedFaceResult, tag: String) {

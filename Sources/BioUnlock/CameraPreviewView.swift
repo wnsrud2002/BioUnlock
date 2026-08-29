@@ -59,14 +59,16 @@ struct CameraPreviewView: View {
             }
         }
         if showLandmarks, let palm = camera.palm {
-            // 색으로 부호 판정 결과를 바로 보여준다 — 청록=손바닥, 주황=손등(또는 부호가 틀림).
-            Canvas { ctx, _ in
-                for p in palm.allJoints {
-                    let v = Self.viewPoint(visionPoint: p, in: rect)
-                    ctx.fill(Path(ellipseIn: CGRect(x: v.x - 3, y: v.y - 3, width: 6, height: 6)),
-                             with: .color(palm.isPalmFacing ? .cyan : .orange))
-                }
-            }
+            // 초근접 손금 경로에는 랜드마크가 없다(손이 프레임을 넘쳐 Vision 이
+            // 손을 못 찾는다). 대신 실제로 잘려나가는 중앙 정사각을 그려서,
+            // 손바닥을 어디에 맞춰야 하는지 보이게 한다.
+            let side = min(rect.width, rect.height)
+            let box = CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2,
+                             width: side, height: side)
+            Rectangle()
+                .stroke(palm.passesAllGates ? Color.green : Color.orange, lineWidth: 2)
+                .frame(width: box.width, height: box.height)
+                .position(x: box.midX, y: box.midY)
         }
     }
 

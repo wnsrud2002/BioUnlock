@@ -19,17 +19,16 @@ import CoreGraphics
 import CryptoKit
 import UnlockKit
 
-/// 등록 결과 한 벌. 코드와 정준 좌표는 반드시 함께 다녀야 한다 —
-/// 다른 정준 좌표로 정렬한 코드끼리 비교하면 ROI가 서로 다른 곳을 가리켜
-/// 점수가 무의미해진다.
+/// 등록 결과 한 벌.
+///
+/// 초근접 경로로 바꾸면서 정준 좌표(canonical)가 사라졌다. 랜드마크로 정렬할
+/// 때는 그 좌표가 코드와 짝을 이뤄야 했지만, 초근접은 화면 중앙을 그대로 쓰고
+/// 회전만 이미지 자체에서 정규화하므로 코드 외에 따로 들고 다닐 게 없다.
 public struct PalmProfile: Codable, Equatable {
     public let codes: [PalmCode]
-    /// 이 사용자의 실측 형상으로 재추정한 정준 5점(PalmAligner.calibrated).
-    public let canonical: [CGPoint]
 
-    public init(codes: [PalmCode], canonical: [CGPoint]) {
+    public init(codes: [PalmCode]) {
         self.codes = codes
-        self.canonical = canonical
     }
 }
 
@@ -39,7 +38,6 @@ public final class PalmProfileStore {
     /// 상태를 지키는 잠금. 키체인·파일 I/O 중에는 잡지 않는다.
     private let stateLock = NSLock()
     private var profile: PalmProfile?
-    private var pendingCanonical: [CGPoint]?
 
     private let ioQueue = DispatchQueue(label: "tech.biounlock.palm.io", qos: .userInitiated)
     private let keyAccount = "BioUnlockPalmKey"
@@ -67,30 +65,8 @@ public final class PalmProfileStore {
         return profile?.codes.count ?? 0
     }
 
-    /// 지금 정렬에 써야 할 정준 좌표. 인증 경로와 등록 경로가 반드시 같은 값을
-    /// 봐야 하므로 여기 한 곳에서만 정한다.
-    ///
-    /// 우선순위: 보정 중 임시값 > 등록된 프로필 > 기본값.
-    /// 등록 2단계(코드 수집)에서는 아직 저장되지 않은 새 정준 좌표로 ROI를 잘라야
-    /// 하는데, 반쪽짜리 프로필을 디스크에 쓰지 않으려고 임시값을 따로 둔다.
-    public var activeCanonical: [CGPoint] {
-        stateLock.lock(); defer { stateLock.unlock() }
-        return pendingCanonical ?? profile?.canonical ?? PalmAligner.defaultCanonical192
-    }
-
-    /// 등록 2단계 시작 — 이 좌표로 ROI를 자르게 한다. 저장은 하지 않는다.
-    public func beginCalibration(_ canonical: [CGPoint]) {
-        stateLock.lock(); pendingCanonical = canonical; stateLock.unlock()
-    }
-
-    /// 등록이 끝나거나 취소되면 반드시 불러야 한다 — 안 부르면 임시값이 남아
-    /// 저장된 프로필과 다른 좌표로 인증하게 된다.
-    public func endCalibration() {
-        stateLock.lock(); pendingCanonical = nil; stateLock.unlock()
-    }
-
     /// 등록 결과 전체를 한 번에 교체한다. 부분 추가는 지원하지 않는다 —
-    /// 정준 좌표가 바뀌면 기존 코드가 전부 무효가 되기 때문이다.
+    /// 등록 세션이 통째로 다시 도는 편이 언제 찍힌 샘플인지 추적하기 쉽다.
     public func register(_ newProfile: PalmProfile) {
         stateLock.lock(); profile = newProfile; stateLock.unlock()
         save()

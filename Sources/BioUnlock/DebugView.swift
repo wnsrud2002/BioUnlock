@@ -121,29 +121,23 @@ struct DebugView: View {
         }
     }
 
-    // MARK: - 손바닥 (로드맵 05~10번)
+    // MARK: - 손금 (초근접)
     //
-    // 등록은 설정 → 손바닥 탭에서 한다. 여기는 진단 전용 — 21점 검출, 손바닥/손등
-    // 부호, Gabor 응답 임계값 튜닝, 그리고 등록된 것과 현재 프레임의 대조 점수를
-    // 확인한다. PalmProfileStore.shared는 세션 메모리에만 있고(암호화 영구 저장은
-    // 아직 없음) 얼굴과 OR 조건이라, 등록하는 순간부터 라이브니스 없이 그 손으로
-    // 잠금이 풀린다는 걸 여기서도 다시 확인할 수 있다.
+    // 등록은 설정 → 손바닥 탭에서 한다. 여기는 진단 전용 — 실제로 인코딩되는
+    // 그림, 게이트 통과 여부, 방향 진폭 임계값 튜닝, 그리고 등록된 것과 현재
+    // 프레임의 대조 점수를 본다. 잠금해제와 같은 저장소를 쓴다.
 
     @ViewBuilder
     private var palmPanel: some View {
         if let p = camera.palm {
-            palmThumb(p.roi, caption: "현재")
-            row("손", p.chirality == .right ? "오른손" : (p.chirality == .left ? "왼손" : "?"))
+            palmThumb(p.roiImage, caption: "인코딩되는 그림")
+            row("살색 비율", String(format: "%.1f%%", p.skinFraction * 100))
+            row("손금 텍스처", String(format: "%.1f%%", p.salience * 100))
+            row("회전 보정", String(format: "%+.1f도", p.rotationDegrees))
             HStack(spacing: 6) {
-                chip(p.isPalmFacing ? "손바닥" : "손등(또는 부호 반대)", p.isPalmFacing)
-                Button("부호 뒤집기") { PalmConfig.palmFacingSign *= -1 }.font(.system(size: 10))
+                chip("살색", p.passesSkinGate)
+                chip("텍스처", p.passesTextureGate)
             }
-            row("현재 부호", String(format: "%+.0f", PalmConfig.palmFacingSign))
-            row("residual", String(format: "%.2f px", p.residual))
-            row("ROI 원본 픽셀", String(format: "%.0f px", p.sourcePixels))
-            chip("ROI 픽셀 게이트", p.passesSourcePixelGate)
-
-            chip("정렬 게이트", p.passesAlignmentGate)
 
             // 방향 진폭 임계값은 실측 전이라 처음엔 안 맞을 가능성이 높다.
             // 재빌드 없이 여기서 조정해가며 비교를 반복해볼 수 있게 했다.
@@ -157,13 +151,11 @@ struct DebugView: View {
                 Button("+10") { PalmConfig.minOrientationSalience += 10 }.font(.system(size: 10))
             }
 
-            // 등록은 설정 → 손바닥 탭에서 한다. 여기서는 지금 등록돼 있는 것과
-            // 현재 프레임을 그대로 대조해 볼 뿐이다(실제 잠금해제와 같은 저장소).
             Button("지금 비교") { comparePalm(p) }
                 .font(.system(size: 10))
                 .disabled(!app.hasPalmRegistered)
             if !app.hasPalmRegistered {
-                Text("등록된 손바닥이 없습니다 — 설정 → 손바닥 탭에서 먼저 등록하세요")
+                Text("등록된 손금이 없습니다 — 설정 → 손바닥 탭에서 먼저 등록하세요")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
 
@@ -181,13 +173,12 @@ struct DebugView: View {
                 }
             } else if didAttemptCompare {
                 // 0점이 아니라 이 문구가 떠야 정상이다 — 0점은 "다른 손"으로
-                // 오해하기 딱 좋다. 위 유효 픽셀 비율이 낮으면 "응답 임계값"을
-                // -5로 몇 번 눌러 낮추고 다시 비교해볼 것.
-                Text("비교 불가 — 겹치는 유효 픽셀 부족. 응답 임계값을 낮춰보세요")
+                // 오해하기 딱 좋다.
+                Text("비교 불가 — 겹치는 유효 픽셀 부족. 방향 진폭을 낮춰보세요")
                     .font(.system(size: 11)).foregroundStyle(.orange)
             }
         } else {
-            empty("손 없음 — 손바닥을 카메라 쪽으로 들어보세요")
+            empty("손금 없음 — 손바닥을 카메라에 바짝 대보세요 (5~10cm)")
         }
     }
 
@@ -202,17 +193,16 @@ struct DebugView: View {
         }
     }
 
-    /// CompCode 인코딩은 무거워서(9×9 커널 × 6방향 컨볼루션) 프레임마다 돌리지 않고
-    /// 버튼을 누른 이 순간의 ROI 한 장에서만 계산한다.
-    private func comparePalm(_ p: AlignedPalmResult) {
-        guard let code = PalmMatcher.encode(rgba: p.pixels, size: PalmAligner.roiOutputSize) else { return }
+    /// 프레임 처리에서 이미 인코딩한 코드를 그대로 쓴다 — 여기서 다시 인코딩하면
+    /// 같은 컨볼루션을 두 번 돌게 된다.
+    private func comparePalm(_ p: PalmFrameResult) {
         didAttemptCompare = true
-        lastCompareValidRatio = code.validRatio
-        lastMatchScore = PalmProfileStore.shared.verify(code)
+        lastCompareValidRatio = p.code.validRatio
+        lastMatchScore = PalmProfileStore.shared.verify(p.code)
         DiagnosticLog.write(String(
             format: "palm 비교 score=%@ validRatio=%.3f threshold=%.2f salience=%.0f",
             lastMatchScore.map { String(format: "%.4f", $0) } ?? "nil(비교불가)",
-            code.validRatio, PalmConfig.matchThreshold, PalmConfig.minOrientationSalience))
+            p.code.validRatio, PalmConfig.matchThreshold, PalmConfig.minOrientationSalience))
     }
 
     // MARK: - 인증
