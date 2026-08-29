@@ -8,7 +8,7 @@ import Foundation
 /// 그 범위가 부족하면 등록 샘플끼리도 무작위 수준으로 떨어지므로 직접 검증한다.
 final class PalmCloseRangeTests: XCTestCase {
 
-    private let side = PalmCloseRange.workingSize
+    private let side = PalmCloseRange.outputSize
 
     /// 손금처럼 한 방향으로 흐르는 줄무늬를 가진 살색 이미지를 만든다.
     /// - Parameter degrees: 줄무늬를 이만큼 기울인다.
@@ -85,5 +85,69 @@ final class PalmCloseRangeTests: XCTestCase {
 
     func testTooSmallInputReturnsNil() {
         XCTAssertNil(PalmCloseRange.analyze(rgba: [UInt8](repeating: 0, count: 16)))
+    }
+
+    // MARK: - 실루엣 기반 위치 찾기
+
+    /// 프레임 안에 살색 원을 그린다. (cx, cy)는 0~1, radius 는 짧은 변 기준 비율.
+    private func frameWithBlob(w: Int, h: Int, cx: Double, cy: Double, radius: Double) -> [UInt8] {
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let r = radius * Double(min(w, h))
+        for y in 0..<h {
+            for x in 0..<w {
+                let dx = Double(x) - cx * Double(w), dy = Double(y) - cy * Double(h)
+                let inside = dx * dx + dy * dy <= r * r
+                let o = (y * w + x) * 4
+                // 안쪽은 살색(R>G>B), 바깥은 회색(살색 조건 불충족)
+                rgba[o]     = inside ? 200 : 100
+                rgba[o + 1] = inside ? 150 : 100
+                rgba[o + 2] = inside ? 130 : 100
+                rgba[o + 3] = 255
+            }
+        }
+        return rgba
+    }
+
+    /// 손이 어디 있든 그 위치를 찾아내야 한다 — 이게 위치 정규화의 근거다.
+    func testLocateFindsBlobCenter() {
+        let w = 240, h = 160
+        for (cx, cy) in [(0.5, 0.5), (0.4, 0.55), (0.6, 0.45)] {
+            let loc = PalmCloseRange.locate(rgba: frameWithBlob(w: w, h: h, cx: cx, cy: cy, radius: 0.38),
+                                            width: w, height: h)
+            XCTAssertEqual(loc.verdict, .ok, "정상 크기 손을 못 찾았다 (\(cx), \(cy))")
+            XCTAssertEqual(Double(loc.centerX), cx, accuracy: 0.05)
+            XCTAssertEqual(Double(loc.centerY), cy, accuracy: 0.05)
+        }
+    }
+
+    /// 손이 커지면 자를 정사각도 그만큼 커져야 한다 — 이게 배율 정규화의 근거다.
+    /// 거리가 달라져도 같은 물리적 영역이 잡히려면 이 비례가 성립해야 한다.
+    func testCropSideScalesWithHandSize() {
+        let w = 240, h = 160
+        let small = PalmCloseRange.locate(rgba: frameWithBlob(w: w, h: h, cx: 0.5, cy: 0.5, radius: 0.22),
+                                          width: w, height: h)
+        let large = PalmCloseRange.locate(rgba: frameWithBlob(w: w, h: h, cx: 0.5, cy: 0.5, radius: 0.33),
+                                          width: w, height: h)
+        XCTAssertGreaterThan(large.cropSide, small.cropSide * 1.3,
+                             "손 크기가 1.5배인데 크롭이 그만큼 안 커졌다")
+    }
+
+    /// 손이 프레임을 넘치면 실루엣이 사라져 정렬 기준이 없다 — 반드시 거부해야 한다.
+    /// 이걸 통과시키면 매 프레임 다른 데를 자르게 되고 코드가 대응되지 않는다.
+    func testOverflowingHandIsRejectedAsTooClose() {
+        let w = 240, h = 160
+        let loc = PalmCloseRange.locate(rgba: frameWithBlob(w: w, h: h, cx: 0.5, cy: 0.5, radius: 1.2),
+                                        width: w, height: h)
+        XCTAssertEqual(loc.verdict, .tooClose)
+    }
+
+    func testNoHandWhenFrameHasNoSkin() {
+        let w = 240, h = 160
+        var gray = [UInt8](repeating: 0, count: w * h * 4)
+        for i in 0..<(w * h) {
+            let o = i * 4
+            gray[o] = 100; gray[o+1] = 100; gray[o+2] = 100; gray[o+3] = 255
+        }
+        XCTAssertEqual(PalmCloseRange.locate(rgba: gray, width: w, height: h).verdict, .noHand)
     }
 }

@@ -12,16 +12,23 @@
 //  전부에서 검출 실패. 즉 '손금이 보이는 거리'와 '랜드마크가 나오는 거리'는
 //  서로 배타적이다 — 랜드마크 기반 ROI 로는 원리적으로 손금 인증이 불가능하다.
 //
-//  대신 어떻게 하는가
-//  ------------------
-//  초근접에서는 손바닥이 화면을 덮으므로 ROI 를 '찾을' 필요가 없다. 화면 중앙을
-//  그대로 쓰면 된다. 랜드마크가 주던 회전 정규화는 포기했다 — 아래 '회전 정규화를
-//  쓰지 않는 이유' 참고. 남는 어긋남은 매칭의 이동 탐색이 흡수한다.
+//  대신 어떻게 하는가 — 손 실루엣으로 정렬한다
+//  ------------------------------------------
+//  처음엔 화면 중앙을 그냥 잘라 썼다. 그런데 그러면 손이 어디에 얼마만 한 크기로
+//  있는지 모르므로 매 프레임 다른 데를 자르게 되고, 손금이 아무리 잘 보여도 코드가
+//  서로 대응되지 않는다(등록 샘플 내부일관성이 0.5~0.78 로 출렁였다).
 //
-//  해상도 계산: 8cm 에서 손바닥 90mm 가 센서에 약 1280px 로 잡힌다(14.2 px/mm).
-//  중앙 정사각(720px)은 손바닥 약 50mm 구간이고, 이를 256px 로 내리면 5.1 px/mm.
-//  0.5mm 주름이 2.6px 이 되어 해상된다. 랜드마크 방식(128px, 2.1 px/mm)에서는
-//  0.5mm 주름이 1px 로 나이퀴스트 한계였다.
+//  피부 영역(실루엣)의 무게중심과 퍼진 정도로 위치와 배율을 정규화한다. 실루엣은
+//  크고 저주파라 프레임마다 안정적이다 — 주름 방향 같은 고주파로 정렬을 잡으려던
+//  시도가 실패한 것과 대조적이다(아래 '회전 정규화를 쓰지 않는 이유' 참고).
+//
+//  거리의 스윗스팟 (720p, 화각 54도 기준 계산)
+//  ------------------------------------------
+//     6~8cm : 해상도 16~21 px/mm 로 좋지만 손이 프레임을 넘쳐 실루엣이 없다 →
+//             정렬 기준이 사라져 오히려 인식이 안 된다
+//    10~12cm: 손바닥 가장자리가 보이고(정렬 가능) 해상도도 10~12 px/mm →
+//             0.5mm 주름이 5px 로 충분히 해상된다. 여기가 목표 거리다
+//    20cm~  : 해상도 6 px/mm 이하로 잔주름이 뭉개진다
 //
 
 import Foundation
@@ -42,21 +49,48 @@ public struct CloseRangeROI {
     public var passesAllGates: Bool { passesSkinGate && passesTextureGate }
 }
 
+/// 프레임 안에서 손이 어디에 얼마만 한 크기로 있는지.
+///
+/// 손 실루엣(피부 영역)에서 구한다. 실루엣은 크고 저주파라 프레임마다 안정적인
+/// 반면, 주름 방향 같은 고주파 특징은 조금만 흔들려도 뒤집힌다 — 정렬 기준은
+/// 안정적인 쪽에서 가져오고, 신원은 고주파(손금)에서 읽는 게 맞다.
+public struct PalmLocation {
+    /// 프레임 기준 정규화 좌표(0~1).
+    public let centerX: CGFloat
+    public let centerY: CGFloat
+    /// 잘라낼 정사각의 한 변(프레임 짧은 변 기준 비율). 손 크기에 비례하므로
+    /// 거리가 바뀌어도 같은 물리적 영역이 잡힌다 = 배율 정규화.
+    public let cropSide: CGFloat
+    public let skinFraction: Float
+    public let verdict: Verdict
+
+    public enum Verdict: Equatable {
+        case ok
+        /// 손이 프레임을 넘쳐 실루엣이 안 보인다. 이러면 위치·크기를 알 수 없어
+        /// 매 프레임 다른 데를 자르게 된다 — 손금은 잘 보여도 정렬이 불가능하다.
+        case tooClose
+        case tooFar
+        case noHand
+    }
+}
+
 public enum PalmCloseRange {
 
-    /// 화면 중앙에서 받아올 정사각 크기. 회전 정규화를 걷어내면서 여유분이
-    /// 필요 없어져 출력 크기와 같다.
-    public static let workingSize = 256
+    /// 손 위치를 찾을 때 쓰는 축소 프레임의 짧은 변. 실루엣만 보면 되므로
+    /// 원본 해상도가 필요 없다.
+    public static let locateSize = 160
+    /// 최종 ROI 크기.
     public static let outputSize = 256
 
-    /// 중앙 정사각 RGBA(workingSize×workingSize)를 받아 ROI 와 코드를 한 번에 낸다.
+    /// locate() 가 정해준 자리에서 잘라 온 RGBA(outputSize×outputSize)를 받아
+    /// ROI 와 코드를 한 번에 낸다.
     ///
     /// 등록과 인증이 반드시 같은 경로를 타야 하므로 진입점을 하나로 둔다
     /// (전처리가 갈리면 코드가 통째로 어긋나는데 점수는 "좀 낮네" 로만 보인다).
     /// 인코딩을 여기서 함께 하는 이유는 품질 지표(유효 픽셀 비율)가 인코딩
     /// 결과에서 나오기 때문이다 — 따로 재면 같은 컨볼루션을 두 번 돌게 된다.
     public static func analyze(rgba: [UInt8]) -> (roi: CloseRangeROI, code: PalmCode)? {
-        let w = workingSize
+        let w = outputSize
         guard rgba.count >= w * w * 4 else { return nil }
 
         let skin = skinFraction(rgba: rgba, count: w * w)
@@ -73,6 +107,72 @@ public enum PalmCloseRange {
         return (roi, code)
     }
 
+    // MARK: - 손 위치 찾기 (실루엣 기반 정렬)
+
+    /// 축소한 전체 프레임에서 손이 어디에 얼마만 한 크기로 있는지 찾는다.
+    ///
+    /// 평균 위치와 '퍼진 정도'로만 판단한다 — 연결요소 분석 같은 걸 하지 않는
+    /// 이유는 표준편차가 튀는 픽셀 몇 개에 훨씬 둔감하기 때문이다.
+    public static func locate(rgba: [UInt8], width: Int, height: Int) -> PalmLocation {
+        var sumX = 0.0, sumY = 0.0, sumXX = 0.0, sumYY = 0.0
+        var hits = 0
+        var borderHits = 0, borderTotal = 0
+
+        rgba.withUnsafeBufferPointer { px in
+            for y in 0..<height {
+                let onVerticalEdge = (y == 0 || y == height - 1)
+                for x in 0..<width {
+                    let o = (y * width + x) * 4
+                    let skin = isSkin(r: Int(px[o]), g: Int(px[o + 1]), b: Int(px[o + 2]))
+                    if skin {
+                        hits += 1
+                        let fx = Double(x), fy = Double(y)
+                        sumX += fx; sumY += fy
+                        sumXX += fx * fx; sumYY += fy * fy
+                    }
+                    // 테두리에 살색이 얼마나 닿아 있는지 = 손이 프레임을 넘쳤는지.
+                    if onVerticalEdge || x == 0 || x == width - 1 {
+                        borderTotal += 1
+                        if skin { borderHits += 1 }
+                    }
+                }
+            }
+        }
+
+        let total = width * height
+        let skinFraction = Float(hits) / Float(max(1, total))
+        let borderFraction = Float(borderHits) / Float(max(1, borderTotal))
+        let shortSide = CGFloat(min(width, height))
+
+        guard hits > total / 20 else {
+            return PalmLocation(centerX: 0.5, centerY: 0.5, cropSide: 0.5,
+                                skinFraction: skinFraction, verdict: .noHand)
+        }
+
+        let n = Double(hits)
+        let mx = sumX / n, my = sumY / n
+        let spread = (sqrt(max(0, sumXX / n - mx * mx)) + sqrt(max(0, sumYY / n - my * my))) / 2
+
+        // 손 크기에 비례한 정사각을 잡는다. 채워진 타원이면 표준편차가 폭의 1/4쯤
+        // 되므로, 손바닥 안쪽에 들어오도록 계수를 잡았다(실측으로 조정할 값).
+        let side = CGFloat(spread) * PalmConfig.cropSpreadMultiplier
+
+        let verdict: PalmLocation.Verdict
+        if borderFraction > PalmConfig.maxBorderSkinFraction {
+            verdict = .tooClose
+        } else if side < shortSide * PalmConfig.minCropSideRatio {
+            verdict = .tooFar
+        } else {
+            verdict = .ok
+        }
+
+        return PalmLocation(centerX: CGFloat(mx) / CGFloat(width),
+                            centerY: CGFloat(my) / CGFloat(height),
+                            cropSide: side / shortSide,
+                            skinFraction: skinFraction,
+                            verdict: verdict)
+    }
+
     // MARK: - 살색 판정
 
     /// 아주 느슨한 살색 검사. 피부색은 인종·조명에 따라 폭이 넓어서 빡빡하게
@@ -83,12 +183,16 @@ public enum PalmCloseRange {
         rgba.withUnsafeBufferPointer { px in
             for i in 0..<count {
                 let o = i * 4
-                let r = Int(px[o]), g = Int(px[o + 1]), b = Int(px[o + 2])
-                // 피부는 조명과 무관하게 대체로 R > G > B 이고 너무 어둡지 않다.
-                if r > 60, r > g, g >= b, r - b > 10 { hits += 1 }
+                if isSkin(r: Int(px[o]), g: Int(px[o + 1]), b: Int(px[o + 2])) { hits += 1 }
             }
         }
         return Float(hits) / Float(max(1, count))
+    }
+
+    /// 피부는 조명과 무관하게 대체로 R > G > B 이고 너무 어둡지 않다.
+    @inline(__always)
+    static func isSkin(r: Int, g: Int, b: Int) -> Bool {
+        r > 60 && r > g && g >= b && r - b > 10
     }
 
     // MARK: - 회전 정규화를 쓰지 않는 이유

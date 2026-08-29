@@ -130,12 +130,17 @@ struct DebugView: View {
     @ViewBuilder
     private var palmPanel: some View {
         if let p = camera.palm {
-            palmThumb(p.roiImage, caption: "인코딩되는 그림")
+            if let img = p.roiImage { palmThumb(img, caption: "인코딩되는 그림") }
             row("살색 비율", String(format: "%.1f%%", p.skinFraction * 100))
             row("손금 텍스처", String(format: "%.1f%%", p.salience * 100))
+            row("손 위치", String(format: "(%.2f, %.2f) 크롭 %.2f",
+                                p.location.centerX, p.location.centerY, p.location.cropSide))
             HStack(spacing: 6) {
-                chip("살색", p.passesSkinGate)
+                chip("거리", p.location.verdict == .ok)
                 chip("텍스처", p.passesTextureGate)
+            }
+            if let guidance = p.guidance {
+                Text(guidance).font(.system(size: 10)).foregroundStyle(.orange)
             }
 
             // 방향 진폭 임계값은 실측 전이라 처음엔 안 맞을 가능성이 높다.
@@ -195,13 +200,14 @@ struct DebugView: View {
     /// 프레임 처리에서 이미 인코딩한 코드를 그대로 쓴다 — 여기서 다시 인코딩하면
     /// 같은 컨볼루션을 두 번 돌게 된다.
     private func comparePalm(_ p: PalmFrameResult) {
+        guard let code = p.code else { return }
         didAttemptCompare = true
-        lastCompareValidRatio = p.code.validRatio
-        lastMatchScore = PalmProfileStore.shared.verify(p.code)
+        lastCompareValidRatio = code.validRatio
+        lastMatchScore = PalmProfileStore.shared.verify(code)
         DiagnosticLog.write(String(
             format: "palm 비교 score=%@ validRatio=%.3f threshold=%.2f salience=%.0f",
             lastMatchScore.map { String(format: "%.4f", $0) } ?? "nil(비교불가)",
-            p.code.validRatio, PalmConfig.matchThreshold, PalmConfig.minOrientationSalience))
+            code.validRatio, PalmConfig.matchThreshold, PalmConfig.minOrientationSalience))
     }
 
     // MARK: - 인증

@@ -287,7 +287,7 @@ private struct PalmTab: View {
             Text("손금이 화면을 꽉 채우도록 (5~10cm)")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             ProgressView(value: session.progress)
-            Text("\(session.collected) / \(PalmConfig.enrollmentSampleCount) 장")
+            Text("\(session.collected) / \(PalmConfig.enrollmentCandidateCount) 장")
                 .font(.system(size: 11, design: .monospaced))
             if !session.blockedReason.isEmpty {
                 Text(session.blockedReason)
@@ -302,19 +302,19 @@ private struct PalmTab: View {
     @ViewBuilder
     private var readyView: some View {
         if let p = camera.palm {
-            HStack(spacing: 8) {
-                palmThumb(p.roiImage)
-                VStack(alignment: .leading, spacing: 4) {
-                    statusChip(String(format: "살색 %.0f%%", p.skinFraction * 100), p.passesSkinGate)
-                    statusChip(String(format: "손금 텍스처 %.0f%%", p.salience * 100), p.passesTextureGate)
+            HStack(spacing: 10) {
+                if let img = p.roiImage { palmThumb(img) }
+                VStack(alignment: .leading, spacing: 5) {
+                    distanceChip(p.location.verdict)
+                    statusChip(String(format: "손금 텍스처 %.0f%%", p.salience * 100),
+                               p.passesTextureGate)
                 }
             }
-            if !p.passesAllGates {
-                Text("손바닥을 카메라에 더 가까이 대세요 — 손금이 화면을 채워야 합니다")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            if let guidance = p.guidance {
+                Text(guidance).font(.system(size: 11)).foregroundStyle(.orange)
             }
         } else {
-            Text("손바닥을 카메라에 가까이 대주세요 (5~10cm)")
+            Text("손바닥을 카메라 앞 10~12cm 에 두세요")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
 
@@ -327,6 +327,19 @@ private struct PalmTab: View {
         if case .failed(let reason) = session.step {
             Text(reason).font(.system(size: 11)).foregroundStyle(.red)
         }
+    }
+
+    /// 거리 안내는 통과/실패가 아니라 '어느 쪽으로 움직여야 하는지'를 보여준다.
+    private func distanceChip(_ verdict: PalmLocation.Verdict) -> some View {
+        let (label, ok): (String, Bool) = {
+            switch verdict {
+            case .ok:       return ("거리 적당", true)
+            case .tooClose: return ("너무 가까움", false)
+            case .tooFar:   return ("너무 멂", false)
+            case .noHand:   return ("손 없음", false)
+            }
+        }()
+        return statusChip(label, ok)
     }
 
     /// 실제로 인코딩되는 그림을 보여준다 — 손금이 안 보이면 등록해도 소용없다.

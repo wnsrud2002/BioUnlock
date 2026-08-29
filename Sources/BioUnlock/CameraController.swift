@@ -42,17 +42,33 @@ struct AlignedFaceResult {
 /// Vision HandPose 가 손을 아예 못 찾기 때문이다(실측으로 확인). 화면 중앙을
 /// 그대로 ROI 로 쓰고, 회전만 이미지 구조에서 정규화한다. PalmCloseRange 참고.
 struct PalmFrameResult {
-    /// 화면에 보여줄 ROI(회전 정규화·CLAHE 까지 적용된 상태).
-    let roiImage: CGImage
+    /// 화면에 보여줄 ROI(CLAHE 까지 적용된 상태). 손을 못 찾았으면 nil.
+    let roiImage: CGImage?
     /// 이 프레임에서 뽑은 CompCode. 인코딩은 프레임당 한 번만 한다.
-    let code: PalmCode
+    /// 손을 못 찾았으면 nil — 그 경우 위치 판정(location)만 UI 안내에 쓴다.
+    let code: PalmCode?
     let skinFraction: Float
     let salience: Float
+    /// 손이 프레임 안 어디에 얼마만 하게 있는지. 너무 가까움/멂 안내에 쓴다.
+    let location: PalmLocation
 
-    var passesSkinGate: Bool { skinFraction >= PalmConfig.minSkinFraction }
     var passesTextureGate: Bool { salience >= PalmConfig.minRoiSalience }
     /// 등록·매칭 모두 이 게이트를 통과한 프레임만 쓴다.
-    var passesAllGates: Bool { passesSkinGate && passesTextureGate }
+    var passesAllGates: Bool { code != nil && location.verdict == .ok && passesTextureGate }
+
+    /// 사용자에게 보여줄 안내. 통과 상태면 nil.
+    var guidance: String? {
+        switch location.verdict {
+        case .noHand:   return "손바닥을 카메라에 보여주세요"
+        case .tooClose: return "너무 가깝습니다 — 손바닥 가장자리가 보이게 조금 떼세요"
+        case .tooFar:   return "더 가까이 (10~12cm)"
+        case .ok:
+            if !passesTextureGate {
+                return String(format: "손금이 안 잡힙니다 — 조명을 밝게 (텍스처 %.0f%%)", salience * 100)
+            }
+            return nil
+        }
+    }
 }
 
 final class CameraController: NSObject, ObservableObject {
@@ -336,9 +352,9 @@ final class CameraController: NSObject, ObservableObject {
         palmGateFrameCount += 1
         if palmGateFrameCount % PalmConfig.matchEveryNFrames == 0 {
             palmResult = makeClosePalm(from: ciImage)
-            if let palmResult, palmResult.passesAllGates {
+            if let palmResult, palmResult.passesAllGates, let code = palmResult.code {
                 didCheckPalmMatch = true
-                palmMatchResult = PalmProfileStore.shared.verify(palmResult.code)
+                palmMatchResult = PalmProfileStore.shared.verify(code)
             }
         }
 
@@ -489,37 +505,67 @@ private extension CameraController {
     /// 초근접 손금 프레임을 만든다. 랜드마크를 쓰지 않는다 — 손금이 보이는
     /// 거리에서는 손이 프레임을 넘쳐 Vision HandPose 가 손을 못 찾기 때문이다.
     ///
-    /// 화면 중앙에서 가장 큰 정사각을 잘라 workingSize 로 렌더링하고, 나머지
-    /// (회전 정규화 · CLAHE · 인코딩)는 PalmCloseRange 가 등록·인증 공통으로 처리한다.
+    /// 두 번 렌더링한다:
+    ///   1) 축소한 전체 프레임 → 피부 실루엣으로 손의 위치·크기를 찾는다
+    ///   2) 그 자리에서 원본 해상도로 ROI 를 잘라 낸다
+    /// 화면 중앙을 무조건 자르던 방식으로는 손이 어디에 얼마만 하게 있는지 몰라
+    /// 매 프레임 다른 데를 잘랐고, 그래서 코드가 서로 대응되지 않았다.
     func makeClosePalm(from image: CIImage) -> PalmFrameResult? {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
 
-        let side = min(extent.width, extent.height)
-        let square = CGRect(x: extent.midX - side / 2, y: extent.midY - side / 2,
-                            width: side, height: side)
-        let w = PalmCloseRange.workingSize
-        let scale = CGFloat(w) / side
-        let scaled = image
-            .cropped(to: square)
+        // 1) 손 찾기 — 실루엣만 보면 되므로 낮은 해상도로 충분하다.
+        let lw = PalmCloseRange.locateSize * Int(extent.width / extent.height)
+        let lh = PalmCloseRange.locateSize
+        guard lw > 0 else { return nil }
+        let locateScale = CGFloat(lh) / extent.height
+        let small = image
+            .transformed(by: CGAffineTransform(translationX: -extent.origin.x, y: -extent.origin.y))
+            .transformed(by: CGAffineTransform(scaleX: locateScale, y: locateScale))
+        var smallPixels = [UInt8](repeating: 0, count: lw * lh * 4)
+        smallPixels.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            ciContext.render(small, toBitmap: base, rowBytes: lw * 4,
+                             bounds: CGRect(x: 0, y: 0, width: CGFloat(lw), height: CGFloat(lh)),
+                             format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        }
+        let location = PalmCloseRange.locate(rgba: smallPixels, width: lw, height: lh)
+        guard location.verdict == .ok else {
+            return PalmFrameResult(roiImage: nil, code: nil,
+                                   skinFraction: location.skinFraction,
+                                   salience: 0, location: location)
+        }
+
+        // 2) 찾은 자리에서 ROI 를 잘라 낸다. 한 변이 손 크기에 비례하므로
+        //    거리가 바뀌어도 같은 물리적 영역이 잡힌다(배율 정규화).
+        let shortSide = min(extent.width, extent.height)
+        let side = location.cropSide * shortSide
+        let cx = extent.origin.x + location.centerX * extent.width
+        // 이미지 좌표는 좌하단 원점이라 y 를 뒤집어야 화면에서 본 위치와 맞는다.
+        let cy = extent.origin.y + (1 - location.centerY) * extent.height
+        let square = CGRect(x: cx - side / 2, y: cy - side / 2, width: side, height: side)
+
+        let out = PalmCloseRange.outputSize
+        let scale = CGFloat(out) / side
+        let cropped = image
+            .clampedToExtent()
             .transformed(by: CGAffineTransform(translationX: -square.origin.x, y: -square.origin.y))
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
 
-        var pixels = [UInt8](repeating: 0, count: w * w * 4)
+        var pixels = [UInt8](repeating: 0, count: out * out * 4)
         pixels.withUnsafeMutableBytes { buf in
             guard let base = buf.baseAddress else { return }
-            ciContext.render(scaled, toBitmap: base, rowBytes: w * 4,
-                             bounds: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(w)),
+            ciContext.render(cropped, toBitmap: base, rowBytes: out * 4,
+                             bounds: CGRect(x: 0, y: 0, width: CGFloat(out), height: CGFloat(out)),
                              format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         }
 
         guard let (roi, code) = PalmCloseRange.analyze(rgba: pixels) else { return nil }
-        guard let roiImage = Self.makeGrayCGImage(luma: roi.luma, size: roi.size) else { return nil }
-
-        return PalmFrameResult(roiImage: roiImage,
+        return PalmFrameResult(roiImage: Self.makeGrayCGImage(luma: roi.luma, size: roi.size),
                                code: code,
                                skinFraction: roi.skinFraction,
-                               salience: roi.salience)
+                               salience: roi.salience,
+                               location: location)
     }
 
     /// 루마 평면을 화면 표시용 회색조 이미지로. 사용자가 실제로 어떤 그림이

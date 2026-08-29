@@ -49,6 +49,23 @@ public enum PalmConfig {
     /// 초점이 안 맞거나 너무 멀면 방향 진폭이 안 나와 이 값이 떨어진다.
     public static var minRoiSalience: Float = 0.15
 
+    // MARK: - 실루엣 기반 정렬
+    //
+    // 8cm 처럼 너무 가까우면 손이 프레임을 넘쳐 실루엣이 사라진다. 그러면 위치도
+    // 크기도 알 수 없어 매 프레임 다른 데를 자르게 되고, 손금이 아무리 잘 보여도
+    // 코드가 서로 대응되지 않는다(내부일관성 0.5~0.78 로 출렁인 원인).
+    // 10~12cm 이 스윗스팟이다 — 가장자리가 보이면서 해상도도 10~12 px/mm 로 충분하다.
+
+    /// 손 픽셀의 '퍼진 정도'(표준편차)에 이 값을 곱해 자를 정사각 크기를 정한다.
+    /// 채워진 타원이면 표준편차가 폭의 1/4쯤이라, 손바닥 안쪽에 들어오게 잡았다.
+    public static var cropSpreadMultiplier: CGFloat = 2.2
+
+    /// 프레임 테두리에 살색이 이 비율을 넘게 닿아 있으면 '너무 가까움'으로 본다.
+    public static var maxBorderSkinFraction: Float = 0.55
+
+    /// 잘라낼 정사각이 프레임 짧은 변의 이 비율보다 작으면 '너무 멂'으로 본다.
+    public static var minCropSideRatio: CGFloat = 0.35
+
     /// 정렬 잔차(픽셀) 상한. 5점이 유사변환으로 설명되지 않을수록 커진다 —
     /// 크면 ROI가 엉뚱한 데를 잘라서 CompCode가 통째로 쓰레기가 된다.
     ///
@@ -57,9 +74,18 @@ public enum PalmConfig {
     /// 원인 중 하나(2026-08-28 실측). 얼굴의 alignmentResidualMax(6.0)와 같은 역할.
     public static var maxAlignmentResidual: CGFloat = 6.0
 
-    /// 등록 시 모을 샘플 수. 참조가 한 장뿐이면 등록 당시 각도에서 조금만 벗어나도
-    /// 점수가 무너진다(얼굴이 포즈 버킷별로 여러 장 모으는 것과 같은 이유).
-    public static var enrollmentSampleCount: Int = 5
+    /// 등록 때 모을 후보 수. 이 중 서로 잘 맞는 것만 골라 실제로 등록한다.
+    /// 넉넉히 모아야 흔들린 프레임을 버리고도 쓸 만한 게 남는다.
+    public static var enrollmentCandidateCount: Int = 12
+
+    /// 후보끼리 이 점수 이상이어야 '같은 자세로 잘 찍힌 것'으로 본다.
+    /// 인증 임계값보다 높게 잡는다 — 등록 샘플은 인증 프레임보다 품질이 좋아야
+    /// 하고, 여기가 느슨하면 어긋난 샘플이 템플릿에 섞여 인증이 통째로 망가진다.
+    public static var enrollmentConsistencyFloor: Float = 0.80
+
+    /// 일관된 샘플이 이 개수도 안 나오면 등록을 실패시킨다. 조용히 등록해두면
+    /// 사용자는 "등록은 됐는데 인식이 안 된다"로 겪게 된다.
+    public static var enrollmentMinKeptSamples: Int = 4
 
     /// 등록 샘플 사이 최소 간격(초). 없으면 30fps에서 거의 같은 프레임 N장을 모으게 되어
     /// 다중 샘플의 의미가 사라진다(얼굴 minSampleInterval과 같은 논리).
