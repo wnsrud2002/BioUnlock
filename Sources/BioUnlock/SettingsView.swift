@@ -307,8 +307,6 @@ private struct PalmTab: View {
                 VStack(alignment: .leading, spacing: 4) {
                     statusChip(String(format: "살색 %.0f%%", p.skinFraction * 100), p.passesSkinGate)
                     statusChip(String(format: "손금 텍스처 %.0f%%", p.salience * 100), p.passesTextureGate)
-                    Text(String(format: "회전 보정 %+.1f도", p.rotationDegrees))
-                        .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }
             if !p.passesAllGates {

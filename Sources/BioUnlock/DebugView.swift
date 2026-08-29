@@ -133,7 +133,6 @@ struct DebugView: View {
             palmThumb(p.roiImage, caption: "인코딩되는 그림")
             row("살색 비율", String(format: "%.1f%%", p.skinFraction * 100))
             row("손금 텍스처", String(format: "%.1f%%", p.salience * 100))
-            row("회전 보정", String(format: "%+.1f도", p.rotationDegrees))
             HStack(spacing: 6) {
                 chip("살색", p.passesSkinGate)
                 chip("텍스처", p.passesTextureGate)

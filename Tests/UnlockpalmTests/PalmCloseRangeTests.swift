@@ -4,9 +4,8 @@ import Foundation
 
 /// 초근접 경로의 핵심 계약을 잠근다.
 ///
-/// 랜드마크를 버리면서 회전 정규화를 이미지 구조에서 추정하게 됐다. 이게
-/// 불안정하면 손을 조금만 기울여도 코드가 통째로 어긋난다 — CompCode 는 방향
-/// 인덱스라 15도만 밀려도 절반 칸이 틀어진다. 그래서 직접 검증한다.
+/// 랜드마크를 버리면서 위치 정렬을 매칭의 이동 탐색에 전적으로 맡기게 됐다.
+/// 그 범위가 부족하면 등록 샘플끼리도 무작위 수준으로 떨어지므로 직접 검증한다.
 final class PalmCloseRangeTests: XCTestCase {
 
     private let side = PalmCloseRange.workingSize
@@ -37,34 +36,38 @@ final class PalmCloseRangeTests: XCTestCase {
         return rgba
     }
 
-    /// 기울기를 바꿔도 회전 정규화가 그만큼 되돌려야 한다.
-    func testDominantOrientationTracksActualTilt() {
-        var previous: Float?
-        for tilt in [0.0, 10.0, 20.0] {
-            guard let (roi, _) = PalmCloseRange.analyze(rgba: syntheticPalm(degrees: tilt)) else {
-                return XCTFail("합성 손금은 항상 분석돼야 한다 (기울기 \(tilt))")
+    /// 같은 손금이 몇 픽셀 어긋나게 찍혀도 코드가 유지돼야 한다.
+    ///
+    /// 초근접에서는 손을 자유롭게 들고 있어 2~5mm 흔들림이 그대로 들어오고,
+    /// 5.1 px/mm 확대에서 그게 10~25px 어긋남이 된다. 이동 탐색이 이걸 흡수하지
+    /// 못하면 등록 샘플끼리도 무작위 수준(0.5)으로 떨어진다 — 실제로 그랬다.
+    func testCodeSurvivesTranslation() {
+        let base = syntheticPalm(degrees: 0)
+        for shift in [6, 14, 20] {
+            let moved = shifted(base, by: shift)
+            guard let (_, a) = PalmCloseRange.analyze(rgba: base),
+                  let (_, b) = PalmCloseRange.analyze(rgba: moved) else {
+                return XCTFail("합성 손금은 항상 분석돼야 한다")
             }
-            if let prev = previous {
-                // 기울기를 10도 더 줬으면 보정각도 그만큼 따라와야 한다.
-                let delta = abs(abs(roi.rotationDegrees - prev) - 10.0)
-                XCTAssertLessThan(delta, 4.0,
-                                  "기울기 10도 변화에 보정각이 따라오지 않는다 (기울기 \(tilt))")
+            guard let score = PalmMatcher.score(a, b) else {
+                return XCTFail("이동 \(shift)px 에서 비교 불가")
             }
-            previous = roi.rotationDegrees
+            XCTAssertGreaterThan(score, 0.85,
+                                 "이동 \(shift)px 를 이동 탐색이 흡수하지 못했다 (score=\(score))")
         }
     }
 
-    /// 같은 손금을 기울여 찍어도 코드가 유지돼야 한다. 이게 회전 정규화의 목적이다.
-    func testCodeSurvivesTilt() {
-        guard let (_, upright) = PalmCloseRange.analyze(rgba: syntheticPalm(degrees: 0)),
-              let (_, tilted) = PalmCloseRange.analyze(rgba: syntheticPalm(degrees: 12)) else {
-            return XCTFail("합성 손금은 항상 분석돼야 한다")
+    /// 이미지를 x 방향으로 밀어 손 흔들림을 흉내낸다(가장자리는 복제).
+    private func shifted(_ rgba: [UInt8], by dx: Int) -> [UInt8] {
+        var out = rgba
+        for y in 0..<side {
+            for x in 0..<side {
+                let src = min(side - 1, max(0, x + dx))
+                let o = (y * side + x) * 4, s = (y * side + src) * 4
+                out[o] = rgba[s]; out[o+1] = rgba[s+1]; out[o+2] = rgba[s+2]; out[o+3] = 255
+            }
         }
-        guard let score = PalmMatcher.score(upright, tilted) else {
-            return XCTFail("정규화가 됐다면 비교가 가능해야 한다")
-        }
-        // 회전 정규화가 없으면 12도(=0.4칸)가 밀려 0.5 근처(무작위)로 떨어진다.
-        XCTAssertGreaterThan(score, 0.8, "기울기 12도에서 코드가 유지되지 않았다 (score=\(score))")
+        return out
     }
 
     /// 살색이 아닌 것(회색 벽)은 걸러야 한다.

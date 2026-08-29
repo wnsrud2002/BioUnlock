@@ -7,7 +7,7 @@
 //  이전에는 2단계(정준 좌표 재추정 → 코드 수집)였다. 그 단계는 랜드마크로 손을
 //  정렬할 때만 의미가 있었는데, 손금이 보이는 거리에서는 Vision 이 손을 아예
 //  못 찾아 랜드마크 경로 자체가 성립하지 않았다(PalmCloseRange 주석 참고).
-//  초근접은 화면 중앙을 그대로 쓰고 회전만 이미지에서 정규화하므로 한 단계로 끝난다.
+//  초근접은 화면 중앙을 그대로 쓰므로 한 단계로 끝난다.
 //
 //  왜 여러 장인가: 참조가 한 장이면 등록 당시 각도에서 조금만 벗어나도 점수가
 //  무너진다. 여러 장 중 '가장 잘 맞는 것'을 쓰면 그 출렁임의 아래쪽 꼬리가 올라간다.
@@ -34,7 +34,6 @@ final class PalmEnrollmentSession: ObservableObject {
     @Published private(set) var blockedReason: String = ""
 
     private var codes: [PalmCode] = []
-    private var rotations: [Float] = []
     private var lastAccepted = Date.distantPast
 
     var isActive: Bool { step == .collecting }
@@ -45,7 +44,6 @@ final class PalmEnrollmentSession: ObservableObject {
 
     func start() {
         codes.removeAll()
-        rotations.removeAll()
         collected = 0
         blockedReason = ""
         lastAccepted = .distantPast
@@ -55,7 +53,6 @@ final class PalmEnrollmentSession: ObservableObject {
 
     func cancel() {
         codes.removeAll()
-        rotations.removeAll()
         collected = 0
         blockedReason = ""
         step = .idle
@@ -82,11 +79,10 @@ final class PalmEnrollmentSession: ObservableObject {
 
         lastAccepted = Date()
         codes.append(palm.code)
-        rotations.append(palm.rotationDegrees)
         collected = codes.count
-        DiagnosticLog.write(String(format: "palm 샘플 %d/%d 텍스처=%.3f 살색=%.2f 회전=%+.1f도",
+        DiagnosticLog.write(String(format: "palm 샘플 %d/%d 텍스처=%.3f 살색=%.2f",
                                    collected, PalmConfig.enrollmentSampleCount,
-                                   palm.salience, palm.skinFraction, palm.rotationDegrees))
+                                   palm.salience, palm.skinFraction))
 
         guard codes.count >= PalmConfig.enrollmentSampleCount else { return }
         finalize()
@@ -110,12 +106,9 @@ final class PalmEnrollmentSession: ObservableObject {
         let minSim = sims.min() ?? 0
         let avgSim = sims.isEmpty ? 0 : sims.reduce(0, +) / Float(sims.count)
 
-        // 회전 추정이 흔들리면 코드가 서로 어긋난다. 등록 샘플 간 편차를 같이
-        // 남겨서, 일관성이 낮을 때 원인이 회전인지 아닌지 구분할 수 있게 한다.
-        let rotSpread = (rotations.max() ?? 0) - (rotations.min() ?? 0)
         DiagnosticLog.write(String(
-            format: "palm 등록 완료 샘플=%d 내부일관성 평균=%.3f 최저=%.3f 회전편차=%.1f도 (임계 %.2f)",
-            codes.count, avgSim, minSim, rotSpread, PalmConfig.matchThreshold))
+            format: "palm 등록 완료 샘플=%d 내부일관성 평균=%.3f 최저=%.3f (임계 %.2f)",
+            codes.count, avgSim, minSim, PalmConfig.matchThreshold))
 
         step = .done(codes.count)
     }

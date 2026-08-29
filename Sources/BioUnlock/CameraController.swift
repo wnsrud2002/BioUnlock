@@ -48,7 +48,6 @@ struct PalmFrameResult {
     let code: PalmCode
     let skinFraction: Float
     let salience: Float
-    let rotationDegrees: Float
 
     var passesSkinGate: Bool { skinFraction >= PalmConfig.minSkinFraction }
     var passesTextureGate: Bool { salience >= PalmConfig.minRoiSalience }
@@ -520,8 +519,7 @@ private extension CameraController {
         return PalmFrameResult(roiImage: roiImage,
                                code: code,
                                skinFraction: roi.skinFraction,
-                               salience: roi.salience,
-                               rotationDegrees: roi.rotationDegrees)
+                               salience: roi.salience)
     }
 
     /// 루마 평면을 화면 표시용 회색조 이미지로. 사용자가 실제로 어떤 그림이

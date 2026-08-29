@@ -46,10 +46,21 @@ public enum PalmMatcher {
     private static let aspectRatio: Double = 0.5
     private static let orientationCount = 6
 
-    /// 정합 오차를 흡수하는 이동 탐색 반경(픽셀). ROI 가 256px 이므로 3px 은
-    /// 예전 128px 시절의 1.5px 에 해당한다. 정준 좌표 재추정 이후 정렬 잔차가
-    /// 1px 수준이라 이 정도로 충분하다 — 반경을 키우면 비용이 제곱으로 는다.
-    private static let shiftSearch = 3
+    // MARK: - 이동 탐색 범위
+    //
+    // 초근접에서는 손을 자유롭게 들고 있어 2~5mm 흔들림이 그대로 들어온다.
+    // ROI 해상도가 5.1 px/mm 이므로 그게 10~25px 어긋남이 된다. 예전 ±3px 로는
+    // 대부분의 프레임이 탐색 범위 밖이라 코드가 아예 대응되지 않았다
+    // (등록 샘플끼리도 내부일관성 0.528 = 무작위 수준, 2026-08-29 실측).
+    //
+    // 그렇다고 ±24px 를 1px 단위로 다 훑으면 49×49 = 2401 이동이라 감당이 안 된다.
+    // 성기게 넓게 훑어 대략을 찾고, 그 근처만 촘촘히 보는 2단계로 나눈다.
+    private static let coarseRange = 24
+    private static let coarseStep = 4
+    /// 성긴 탐색에서는 4픽셀마다 하나씩만 비교한다(비용 1/16). 대략의 위치만
+    /// 찾으면 되므로 이걸로 충분하고, 정밀 단계에서 전체 픽셀을 본다.
+    private static let coarseSampling = 4
+    private static let fineRange = 3
 
     /// [방향][커널 내 오프셋]. 앱 생애 동안 한 번만 만든다.
     private static let kernels: [[Float]] = (0..<orientationCount).map(makeKernel)
@@ -182,10 +193,26 @@ public enum PalmMatcher {
             a.mask.withUnsafeBufferPointer { am in
                 b.bits.withUnsafeBufferPointer { bb in
                     b.mask.withUnsafeBufferPointer { bm in
-                        for dy in -shiftSearch...shiftSearch {
-                            for dx in -shiftSearch...shiftSearch {
-                                if let d = distance(ab, am, bb, bm, size: a.size,
-                                                    dx: dx, dy: dy, required: required) {
+                        // 1단계: 성기게 넓게 훑어 대략 어디쯤 맞는지 찾는다.
+                        var bestCoarse: Float = .greatestFiniteMagnitude
+                        var anchorX = 0, anchorY = 0
+                        for dy in stride(from: -coarseRange, through: coarseRange, by: coarseStep) {
+                            for dx in stride(from: -coarseRange, through: coarseRange, by: coarseStep) {
+                                if let d = distance(ab, am, bb, bm, size: a.size, dx: dx, dy: dy,
+                                                    required: required / (coarseSampling * coarseSampling),
+                                                    sampling: coarseSampling),
+                                   d < bestCoarse {
+                                    bestCoarse = d; anchorX = dx; anchorY = dy
+                                }
+                            }
+                        }
+                        guard bestCoarse < .greatestFiniteMagnitude else { return }
+
+                        // 2단계: 그 근처만 1픽셀 단위로 전체 픽셀을 보고 확정한다.
+                        for dy in (anchorY - fineRange)...(anchorY + fineRange) {
+                            for dx in (anchorX - fineRange)...(anchorX + fineRange) {
+                                if let d = distance(ab, am, bb, bm, size: a.size, dx: dx, dy: dy,
+                                                    required: required, sampling: 1) {
                                     best = min(best ?? d, d)
                                 }
                             }
@@ -197,11 +224,13 @@ public enum PalmMatcher {
         return best.map { 1 - $0 }
     }
 
+    /// - Parameter sampling: 1이면 전체 픽셀, n이면 n픽셀마다 하나씩만 본다.
     private static func distance(_ aBits: UnsafeBufferPointer<UInt8>,
                                  _ aMask: UnsafeBufferPointer<Bool>,
                                  _ bBits: UnsafeBufferPointer<UInt8>,
                                  _ bMask: UnsafeBufferPointer<Bool>,
-                                 size: Int, dx: Int, dy: Int, required: Int) -> Float? {
+                                 size: Int, dx: Int, dy: Int,
+                                 required: Int, sampling: Int) -> Float? {
         var total: Float = 0
         var validCount = 0
         // 겹치는 구간만 돈다 — 매 픽셀에서 경계를 검사하지 않는다.
@@ -209,10 +238,10 @@ public enum PalmMatcher {
         let xStart = max(0, -dx), xEnd = min(size, size - dx)
         guard yStart < yEnd, xStart < xEnd else { return nil }
 
-        for y in yStart..<yEnd {
+        for y in stride(from: yStart, to: yEnd, by: sampling) {
             let rowA = y * size
             let rowB = (y + dy) * size
-            for x in xStart..<xEnd {
+            for x in stride(from: xStart, to: xEnd, by: sampling) {
                 let ai = rowA + x
                 let bi = rowB + x + dx
                 if aMask[ai] && bMask[bi] {
