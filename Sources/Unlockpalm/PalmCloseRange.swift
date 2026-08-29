@@ -107,6 +107,33 @@ public enum PalmCloseRange {
         return (roi, code)
     }
 
+    // MARK: - 좌표 변환
+
+    /// 축소 프레임의 크기를 정한다. 세로를 locateSize 에 맞추고 가로는 종횡비대로.
+    ///
+    /// 예전에 `locateSize * Int(width / height)` 로 썼다가 1280×720 에서
+    /// Int(1.777) = 1 이 되어 160×160 이 나왔다. 284×160 을 그 버퍼에 렌더링하니
+    /// 프레임 왼쪽 56% 만 보고 손 위치를 계산했다 — ROI 가 엉뚱한 데로 갔다.
+    public static func locateFrameSize(for extent: CGRect) -> (width: Int, height: Int) {
+        guard extent.height > 0 else { return (locateSize, locateSize) }
+        let w = Int((extent.width / extent.height * CGFloat(locateSize)).rounded())
+        return (max(1, w), locateSize)
+    }
+
+    /// 찾은 손 위치를 원본 이미지 좌표계의 잘라낼 사각형으로 옮긴다.
+    ///
+    /// !! y 뒤집기 !!
+    /// locate() 가 받는 비트맵은 첫 행이 화면 위쪽이다(CGImage 규약). 반면
+    /// CIImage 는 좌하단 원점이라 y 가 위로 증가한다. 그래서 centerY 를 그대로
+    /// 쓰면 위아래가 뒤집힌 자리를 자르게 된다. 이 변환을 호출부에 흩어 놓으면
+    /// 한쪽만 고치고 다른 쪽을 놓치기 쉬워 여기 한 곳에 모았다.
+    public static func cropRect(for location: PalmLocation, in extent: CGRect) -> CGRect {
+        let side = location.cropSide * min(extent.width, extent.height)
+        let cx = extent.origin.x + location.centerX * extent.width
+        let cy = extent.origin.y + (1 - location.centerY) * extent.height
+        return CGRect(x: cx - side / 2, y: cy - side / 2, width: side, height: side)
+    }
+
     // MARK: - 손 위치 찾기 (실루엣 기반 정렬)
 
     /// 축소한 전체 프레임에서 손이 어디에 얼마만 한 크기로 있는지 찾는다.

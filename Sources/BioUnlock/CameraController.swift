@@ -515,9 +515,7 @@ private extension CameraController {
         guard extent.width > 0, extent.height > 0 else { return nil }
 
         // 1) 손 찾기 — 실루엣만 보면 되므로 낮은 해상도로 충분하다.
-        let lw = PalmCloseRange.locateSize * Int(extent.width / extent.height)
-        let lh = PalmCloseRange.locateSize
-        guard lw > 0 else { return nil }
+        let (lw, lh) = PalmCloseRange.locateFrameSize(for: extent)
         let locateScale = CGFloat(lh) / extent.height
         let small = image
             .transformed(by: CGAffineTransform(translationX: -extent.origin.x, y: -extent.origin.y))
@@ -538,15 +536,10 @@ private extension CameraController {
 
         // 2) 찾은 자리에서 ROI 를 잘라 낸다. 한 변이 손 크기에 비례하므로
         //    거리가 바뀌어도 같은 물리적 영역이 잡힌다(배율 정규화).
-        let shortSide = min(extent.width, extent.height)
-        let side = location.cropSide * shortSide
-        let cx = extent.origin.x + location.centerX * extent.width
-        // 이미지 좌표는 좌하단 원점이라 y 를 뒤집어야 화면에서 본 위치와 맞는다.
-        let cy = extent.origin.y + (1 - location.centerY) * extent.height
-        let square = CGRect(x: cx - side / 2, y: cy - side / 2, width: side, height: side)
-
+        //    좌표 변환(특히 y 뒤집기)은 PalmCloseRange 에 모아 뒀다.
+        let square = PalmCloseRange.cropRect(for: location, in: extent)
         let out = PalmCloseRange.outputSize
-        let scale = CGFloat(out) / side
+        let scale = CGFloat(out) / square.width
         let cropped = image
             .clampedToExtent()
             .transformed(by: CGAffineTransform(translationX: -square.origin.x, y: -square.origin.y))
