@@ -33,6 +33,38 @@ final class AppCoordinator: ObservableObject {
     @Published private(set) var hasPalmRegistered: Bool = false
     @Published private(set) var palmSampleCount: Int = 0
 
+    // MARK: - 실시간 인식 테스트
+    //
+    // 이게 없으면 "등록이 제대로 됐는지" 확인하려고 매번 화면을 잠가봐야 한다.
+    // 설정 창에서 바로 점수를 보여줘서 피드백 루프를 짧게 만든다.
+    // 잠금 해제와 완전히 같은 대조 함수를 쓴다 — 따로 구현하면 그 구현의
+    // 오차를 재게 된다.
+
+    /// 얼굴 실시간 대조 결과. nil 이면 게이트를 통과한 프레임이 아직 없다는 뜻.
+    @Published private(set) var testFaceScore: Float?
+    @Published private(set) var testFaceName: String?
+    /// 손금 실시간 대조 결과. nil 이면 대조 불가(등록 없음 또는 겹침 부족).
+    @Published private(set) var testPalmScore: Float?
+
+    /// 테스트 UI 가 실제로 보일 때만 계산한다. 안 보는데 매 프레임 대조할 이유가 없다.
+    var isFaceTestVisible = false
+    var isPalmTestVisible = false
+
+    var testFacePasses: Bool {
+        guard let s = testFaceScore else { return false }
+        return s >= FaceIDConfig.unlockIdentityThreshold
+    }
+    var testPalmPasses: Bool {
+        guard let s = testPalmScore else { return false }
+        return s >= PalmConfig.matchThreshold
+    }
+
+    func resetTestScores() {
+        testFaceScore = nil
+        testFaceName = nil
+        testPalmScore = nil
+    }
+
     /// 카메라를 항상 켜 둘지. 끄면 잠금·등록·프리뷰 중에만 켜진다.
     /// 항상 켜면 녹색 LED 가 상시 점등하지만 인식이 0.5초 정도 빨라진다.
     @Published var cameraAlwaysOn: Bool {
@@ -170,15 +202,32 @@ final class AppCoordinator: ObservableObject {
             guard let self else { return }
             self.enrollment.feed(face: face, aligned: aligned)
             self.unlock.feed(aligned: aligned)
+            self.updateFaceTestScore(aligned)
         }
         // 얼굴과 OR 조건 — 둘 중 하나만 통과해도 해제된다. 손바닥 쪽엔 라이브니스가
         // 없다는 걸 UnlockService.feedPalm 안전 규칙 주석에 남겨 뒀다.
         camera.onPalmMatch = { [weak self] score in
-            self?.unlock.feedPalm(score: score)
+            guard let self else { return }
+            self.unlock.feedPalm(score: score)
+            // 잠금 해제와 완전히 같은 점수를 그대로 화면에 보여준다.
+            if self.isPalmTestVisible { self.testPalmScore = score }
         }
         camera.onPalmFrame = { [weak self] palm in
-            self?.palmEnrollment.feed(palm)
+            guard let self else { return }
+            self.palmEnrollment.feed(palm)
+            // 게이트를 못 넘긴 프레임에서는 직전 점수를 지운다. 안 그러면 손을
+            // 치웠는데도 "일치"가 그대로 떠 있어 오해하게 된다.
+            if self.isPalmTestVisible, !palm.passesAllGates { self.testPalmScore = nil }
         }
+
+        // 얼굴이 프레임에서 사라지면 테스트 점수도 지운다(같은 이유).
+        camera.$face
+            .sink { [weak self] face in
+                guard let self, self.isFaceTestVisible, face == nil else { return }
+                self.testFaceScore = nil
+                self.testFaceName = nil
+            }
+            .store(in: &cancellables)
 
         // 잠금 상태에 따라 카메라를 켜고 끈다. 해제될 때마다 키체인도 데워둔다.
         ScreenLockMonitor.shared.$isLocked
@@ -262,6 +311,21 @@ final class AppCoordinator: ObservableObject {
 
     func refreshPassword() {
         passwordIsSet = LoginPasswordStore.isSet
+    }
+
+    /// 얼굴 실시간 대조. UnlockService.feed 와 같은 FaceProfileStore.verify 를 쓴다.
+    /// 게이트를 통과 못 한 프레임(흐림·정렬 불량)은 임베딩이 없어 nil 로 둔다 —
+    /// 0점으로 표시하면 "얼굴이 안 맞는다"로 오해하게 된다.
+    private func updateFaceTestScore(_ aligned: AlignedFaceResult) {
+        guard isFaceTestVisible else { return }
+        guard let embedding = aligned.embedding, !FaceProfileStore.shared.isEmpty else {
+            testFaceScore = nil
+            testFaceName = nil
+            return
+        }
+        let result = FaceProfileStore.shared.verify(embedding)
+        testFaceScore = result.score
+        testFaceName = result.profileName
     }
 
     func refreshPalmRegistration() {

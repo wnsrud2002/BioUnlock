@@ -161,10 +161,73 @@ private struct FaceTab: View {
                         }
                     }
                 }
+
+                Divider()
+                MatchTestView(title: "지금 이 얼굴이 등록된 얼굴과 맞는지",
+                              score: app.testFaceScore,
+                              passes: app.testFacePasses,
+                              threshold: Double(FaceIDConfig.unlockIdentityThreshold),
+                              subject: app.testFaceName,
+                              idleHint: "카메라를 보세요 — 게이트를 통과한 프레임이 오면 점수가 나옵니다")
             }
             Spacer()
         }
         .padding()
+        .onAppear { app.isFaceTestVisible = true }
+        .onDisappear { app.isFaceTestVisible = false; app.resetTestScores() }
+    }
+}
+
+// MARK: - 인식 테스트 (얼굴·손금 공통)
+
+/// 등록이 제대로 됐는지 화면을 잠그지 않고 바로 확인한다.
+///
+/// 점수는 잠금 해제가 쓰는 것과 완전히 같은 대조 함수에서 나온다 — 테스트용으로
+/// 따로 계산하면 그 계산의 오차를 재게 된다(얼굴 임계값을 LFW 로 잡을 때
+/// BatchEmbedder 를 인증과 같은 경로로 돌린 것과 같은 이유).
+private struct MatchTestView: View {
+    let title: String
+    let score: Float?
+    let passes: Bool
+    let threshold: Double
+    /// 얼굴은 누구와 맞았는지 보여준다. 손금은 프로필이 하나뿐이라 nil.
+    var subject: String?
+    let idleHint: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 11, weight: .semibold))
+
+            if let score {
+                HStack(spacing: 8) {
+                    Text(passes ? "일치" : "불일치")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(.horizontal, 10).padding(.vertical, 3)
+                        .background(passes ? Color.green.opacity(0.25) : Color.red.opacity(0.2))
+                        .foregroundStyle(passes ? Color.green : Color.red)
+                        .clipShape(Capsule())
+                    Text(String(format: "%.4f", score))
+                        .font(.system(size: 13, design: .monospaced))
+                    if let subject { Text(subject).font(.system(size: 11)).foregroundStyle(.secondary) }
+                    Spacer()
+                    Text(String(format: "임계 %.2f", threshold))
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                // 막대에 임계선을 같이 그려 지금 얼마나 여유가 있는지 보이게 한다.
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.secondary.opacity(0.2))
+                        Capsule().fill(passes ? Color.green : Color.orange)
+                            .frame(width: g.size.width * CGFloat(max(0, min(1, score))))
+                        Rectangle().fill(Color.red).frame(width: 1)
+                            .offset(x: g.size.width * CGFloat(threshold))
+                    }
+                }
+                .frame(height: 8)
+            } else {
+                Text(idleHint).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -192,13 +255,27 @@ private struct PalmTab: View {
             Divider()
             registeredView
 
+            if app.hasPalmRegistered, !session.isActive {
+                Divider()
+                MatchTestView(title: "지금 이 손금이 등록된 손금과 맞는지",
+                              score: app.testPalmScore,
+                              passes: app.testPalmPasses,
+                              threshold: Double(PalmConfig.matchThreshold),
+                              idleHint: "손바닥을 카메라에 바짝 대세요 — 게이트를 통과하면 점수가 나옵니다")
+            }
+
             Text("⚠️ 라이브니스(사진 방어)가 없습니다 — 등록된 손금 사진 한 장으로도 잠금이 풀릴 수 있습니다. 임계값도 아직 타인 데이터로 검증되지 않았습니다.")
                 .font(.system(size: 10)).foregroundStyle(.orange)
 
             Spacer()
         }
         .padding()
-        .onDisappear { if session.isActive { session.cancel() } }
+        .onAppear { app.isPalmTestVisible = true }
+        .onDisappear {
+            app.isPalmTestVisible = false
+            app.resetTestScores()
+            if session.isActive { session.cancel() }
+        }
     }
 
     // MARK: - 등록 진행 중
