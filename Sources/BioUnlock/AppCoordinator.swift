@@ -78,6 +78,31 @@ final class AppCoordinator: ObservableObject {
         didSet { applyLaunchAtLogin() }
     }
 
+    /// 사용자 활동 후 카메라를 켜 둘 시간(초).
+    ///
+    /// 잠겼다고 무조건 켜 두면 자리를 비운 내내 카메라가 돌아 배터리·발열을 먹는다.
+    /// 짧을수록 배터리에 좋고, 길수록 느긋하게 인식할 여유가 생긴다.
+    @Published var unlockAttemptWindow: Double {
+        didSet {
+            defaults.set(unlockAttemptWindow, forKey: Keys.unlockAttemptWindow)
+            UserPresence.attemptWindow = unlockAttemptWindow
+        }
+    }
+
+    /// 지금 카메라가 켜져 있는 이유들(설정 화면 표시용).
+    var activeCameraReasons: [String] {
+        reasons.map { r in
+            switch r {
+            case .alwaysOn:    return "항상 켜기"
+            case .debugWindow: return "디버그 창"
+            case .faceTab:     return "얼굴 탭"
+            case .palmTab:     return "손바닥 탭"
+            case .enrolling:   return "등록 중"
+            case .locked:      return "잠금 해제 대기"
+            }
+        }.sorted()
+    }
+
     // MARK: - 보안 설정 (사용자 조정 가능, UserDefaults 에 저장)
     //
     // 전에는 FaceIDConfig 의 static var 를 뷰에서 직접 바인딩했다 — 화면에는 나왔지만
@@ -127,6 +152,7 @@ final class AppCoordinator: ObservableObject {
     private let defaults = UserDefaults.standard
     private enum Keys {
         static let cameraAlwaysOn = "cameraAlwaysOn"
+        static let unlockAttemptWindow = "unlockAttemptWindow"
         static let faceUnlockEnabled = "faceUnlockEnabled"
         static let palmUnlockEnabled = "palmUnlockEnabled"
         static let antiSpoofEnabled = "antiSpoofEnabled"
@@ -152,6 +178,8 @@ final class AppCoordinator: ObservableObject {
     private init() {
         cameraAlwaysOn = defaults.bool(forKey: Keys.cameraAlwaysOn)
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        unlockAttemptWindow = (defaults.object(forKey: Keys.unlockAttemptWindow) as? Double)
+            ?? UserPresence.attemptWindow
 
         // 저장된 값이 있으면 쓰고, 없으면(최초 실행) FaceIDConfig 의 실측 검증된
         // 기본값을 그대로 쓴다. didSet 이 init 도중에도 확실히 반영되도록 대입
@@ -210,7 +238,10 @@ final class AppCoordinator: ObservableObject {
             guard let self else { return }
             self.unlock.feedPalm(score: score)
             // 잠금 해제와 완전히 같은 점수를 그대로 화면에 보여준다.
-            if self.isPalmTestVisible { self.testPalmScore = score }
+            if self.isPalmTestVisible {
+                self.testPalmScore = score
+                self.logPalmTestScore(score)
+            }
         }
         camera.onPalmFrame = { [weak self] palm in
             guard let self else { return }
@@ -234,7 +265,7 @@ final class AppCoordinator: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] locked in
                 guard let self else { return }
-                self.setReason(.locked, locked && self.unlock.isEnabled)
+                self.updateLockedCameraReason()
                 if !locked { Self.warmKeychain() }
             }
             .store(in: &cancellables)
@@ -245,8 +276,16 @@ final class AppCoordinator: ObservableObject {
                 guard let self else { return }
                 self.defaults.set(face, forKey: Keys.faceUnlockEnabled)
                 self.defaults.set(palm, forKey: Keys.palmUnlockEnabled)
-                self.setReason(.locked, (face || palm) && ScreenLockMonitor.shared.isLocked)
+                self.updateLockedCameraReason()
             }
+            .store(in: &cancellables)
+
+        // 잠겨 있다고 무조건 켜지 않는다 — 사용자가 앞에 있을 때만 켠다.
+        // 이게 없으면 잠그고 자리를 비운 동안 몇 시간이고 카메라가 돌아
+        // 배터리와 발열을 먹는다(UserPresence 주석 참고).
+        UserPresence.shared.$isPresent
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.updateLockedCameraReason() }
             .store(in: &cancellables)
 
         enrollment.$step
@@ -260,6 +299,8 @@ final class AppCoordinator: ObservableObject {
                 if !active { self.refreshProfiles() }
             }
             .store(in: &cancellables)
+
+        UserPresence.attemptWindow = unlockAttemptWindow
 
         // 창이 없는 게 정상 상태이므로 세션 구성은 앱 시작 시 해 둔다.
         // 이걸 빼먹으면 start() 가 구성되지 않은 세션을 켜려 해서 프레임이 한 장도 오지 않는다.
@@ -289,6 +330,18 @@ final class AppCoordinator: ObservableObject {
 
     // MARK: - 카메라 수명
 
+    /// 잠금 해제를 위해 카메라를 켤지 다시 판단한다.
+    ///
+    /// 세 가지가 모두 맞아야 켠다: 화면이 잠겨 있고, 잠금 해제가 켜져 있고,
+    /// 사용자가 기기 앞에 있을 가능성이 있을 것. 마지막 조건이 없으면 잠그고
+    /// 자리를 비운 내내 카메라가 돈다.
+    private func updateLockedCameraReason() {
+        let wanted = ScreenLockMonitor.shared.isLocked
+            && unlock.isEnabled
+            && UserPresence.shared.isPresent
+        setReason(.locked, wanted)
+    }
+
     func setReason(_ reason: CameraReason, _ active: Bool) {
         let before = reasons.isEmpty
         if active { reasons.insert(reason) } else { reasons.remove(reason) }
@@ -311,6 +364,20 @@ final class AppCoordinator: ObservableObject {
 
     func refreshPassword() {
         passwordIsSet = LoginPasswordStore.isSet
+    }
+
+    /// 테스트 창에서 나온 점수를 로그에 남긴다.
+    ///
+    /// 임계값을 근거 있게 정하려면 '본인 손'과 '다른 손'의 점수 분포가 필요한데,
+    /// 화면에 잠깐 떴다 사라지면 아무것도 안 남는다. 초당 한 줄로 줄여서 남긴다
+    /// — 매 프레임 쓰면 로그가 다른 기록을 밀어낸다.
+    private var lastPalmTestLog = Date.distantPast
+    private func logPalmTestScore(_ score: Float?) {
+        guard Date().timeIntervalSince(lastPalmTestLog) >= 1.0 else { return }
+        lastPalmTestLog = Date()
+        DiagnosticLog.write(String(format: "palm 테스트 score=%@ (임계 %.2f)",
+                                   score.map { String(format: "%.4f", $0) } ?? "nil",
+                                   PalmConfig.matchThreshold))
     }
 
     /// 얼굴 실시간 대조. UnlockService.feed 와 같은 FaceProfileStore.verify 를 쓴다.

@@ -66,18 +66,38 @@ private struct GeneralTab: View {
             }
 
             Section {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("잠금 후 카메라 대기 시간")
+                        Spacer()
+                        Text("\(Int(app.unlockAttemptWindow))초")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $app.unlockAttemptWindow, in: 5...120, step: 5)
+                }
+                Text("화면이 잠겨 있어도 카메라는 이 시간 동안만 켜집니다. 뚜껑을 열거나 키·트랙패드를 건드리면 다시 켜집니다.\n짧을수록 배터리·발열에 유리하고, 길수록 여유 있게 인식됩니다.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            } header: { Text("배터리") }
+
+            Section {
                 Toggle("카메라를 항상 켜 두기", isOn: $app.cameraAlwaysOn)
                 Text(app.cameraAlwaysOn
-                     ? "인식이 약 0.5초 빨라지지만 카메라 표시등이 상시 켜집니다."
+                     ? "⚠️ 위 대기 시간을 무시하고 계속 켜 둡니다. 인식이 약 0.5초 빨라지지만 배터리·발열이 늘고 카메라 표시등이 상시 켜집니다."
                      : "잠금·등록·프리뷰 중에만 카메라를 켭니다. 세션 시작에 시간이 조금 걸립니다.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(app.cameraAlwaysOn ? .orange : .secondary)
             } header: { Text("카메라") }
 
             Section {
                 LabeledContent("장치", value: app.camera.deviceName)
                 LabeledContent("상태", value: app.camera.status)
                 LabeledContent("FPS", value: String(format: "%.1f", app.camera.fps))
+                // 카메라가 왜 켜져 있는지 보여준다 — "왜 계속 켜져 있지?" 를
+                // 추측하지 않고 바로 알 수 있어야 한다.
+                LabeledContent("켜진 이유",
+                               value: app.activeCameraReasons.isEmpty
+                                    ? "꺼짐" : app.activeCameraReasons.joined(separator: ", "))
             } header: { Text("현재") }
         }
         .formStyle(.grouped)
@@ -246,7 +266,7 @@ private struct PalmTab: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             switch session.step {
-            case .collecting:
+            case .collecting, .waitingForLift:
                 collectingView
             case .idle, .done, .failed:
                 readyView
@@ -282,12 +302,14 @@ private struct PalmTab: View {
 
     private var collectingView: some View {
         VStack(spacing: 6) {
-            Text("손바닥을 카메라에 최대한 가까이")
+            Text(session.instruction)
                 .font(.system(size: 14, weight: .semibold))
-            Text("손금이 화면을 꽉 채우도록 (5~10cm)")
+            // 회차를 나눠 찍는 이유를 화면에도 남긴다 — 한 자세만 담으면
+            // 그 자세에 과적합돼 다시 올렸을 때 인식이 안 된다.
+            Text("자세를 조금씩 바꿔가며 담아야 나중에 잘 인식됩니다")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             ProgressView(value: session.progress)
-            Text("\(session.collected) / \(PalmConfig.enrollmentCandidateCount) 장")
+            Text("\(session.collected) / \(PalmConfig.enrollmentRounds * PalmConfig.samplesPerRound) 장")
                 .font(.system(size: 11, design: .monospaced))
             if !session.blockedReason.isEmpty {
                 Text(session.blockedReason)

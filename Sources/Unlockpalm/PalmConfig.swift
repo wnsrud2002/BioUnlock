@@ -74,16 +74,32 @@ public enum PalmConfig {
     /// 원인 중 하나(2026-08-28 실측). 얼굴의 alignmentResidualMax(6.0)와 같은 역할.
     public static var maxAlignmentResidual: CGFloat = 6.0
 
-    /// 등록 때 모을 후보 수. 이 중 서로 잘 맞는 것만 골라 실제로 등록한다.
-    /// 넉넉히 모아야 흔들린 프레임을 버리고도 쓸 만한 게 남는다.
-    public static var enrollmentCandidateCount: Int = 12
+    // MARK: - 등록 (여러 번 올려놓고 찍는다)
+    //
+    // 처음엔 한 번에 12장을 찍고 '서로 가장 잘 맞는 것'만 골랐다. 그랬더니 한
+    // 순간의 거의 동일한 프레임만 남아 그 자세에 과적합됐다 — 등록 샘플끼리는
+    // 0.804 인데 23초 뒤 손을 다시 올리니 0.523 이었다(2026-08-29 실측).
+    //
+    // 인증에서 이기려면 '한 자세를 정밀하게'가 아니라 '여러 자세를 두루' 담아야
+    // 한다. 그래서 손을 떼었다 올리는 걸 반복시키고, 각 회차에서 한 장씩 받는다.
+    // 얼굴 등록이 포즈 버킷을 돌며 찍는 것과 같은 논리다.
 
-    /// 후보끼리 이 점수 이상이어야 '같은 자세로 잘 찍힌 것'으로 본다.
-    /// 인증 임계값보다 높게 잡는다 — 등록 샘플은 인증 프레임보다 품질이 좋아야
-    /// 하고, 여기가 느슨하면 어긋난 샘플이 템플릿에 섞여 인증이 통째로 망가진다.
-    public static var enrollmentConsistencyFloor: Float = 0.80
+    /// 손을 떼었다 다시 올리는 횟수. 회차마다 다른 자세가 담긴다.
+    public static var enrollmentRounds: Int = 4
 
-    /// 일관된 샘플이 이 개수도 안 나오면 등록을 실패시킨다. 조용히 등록해두면
+    /// 한 회차에서 담을 샘플 수.
+    public static var samplesPerRound: Int = 2
+
+    /// 다음 회차로 넘어가려면 손이 이 시간만큼 프레임에서 사라져야 한다.
+    /// 이게 없으면 사용자가 손을 안 떼도 회차가 넘어가 같은 자세만 쌓인다.
+    public static var enrollmentLiftSeconds: TimeInterval = 0.6
+
+    /// 등록 샘플이 최소한 다른 샘플 하나와는 이만큼 맞아야 한다.
+    /// 완전히 엉뚱한 프레임(흔들림·가림)만 걸러내는 용도라 느슨하게 잡는다 —
+    /// 여기를 높이면 다시 과적합으로 돌아간다.
+    public static var enrollmentValidityFloor: Float = 0.60
+
+    /// 유효한 샘플이 이 개수도 안 나오면 등록을 실패시킨다. 조용히 등록해두면
     /// 사용자는 "등록은 됐는데 인식이 안 된다"로 겪게 된다.
     public static var enrollmentMinKeptSamples: Int = 4
 

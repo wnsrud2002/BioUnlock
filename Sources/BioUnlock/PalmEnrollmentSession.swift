@@ -2,20 +2,22 @@
 //  PalmEnrollmentSession.swift
 //  BioUnlock
 //
-//  손금 등록. 후보를 넉넉히 모은 뒤 '서로 잘 맞는 것들'만 골라 등록한다.
+//  손금 등록. 손을 떼었다 다시 올리는 걸 여러 번 반복하며 찍는다.
 //
-//  왜 고르는 절차가 필요한가
-//  ------------------------
-//  그냥 5장을 받아 등록했더니 서로 어긋난 샘플이 그대로 들어갔다(실측 내부일관성
-//  0.516 — 무작위 수준). 등록 샘플끼리 안 맞으면 어떤 프레임을 들이대도 통과할 수
-//  없는 템플릿이 된다. 그런데 그 사실이 등록 시점에는 드러나지 않아서, 사용자는
-//  "등록은 됐는데 인식이 안 된다"로 겪게 된다.
+//  왜 한 번에 몰아 찍으면 안 되는가
+//  --------------------------------
+//  처음엔 12장을 연속으로 찍고 '서로 가장 잘 맞는 것'만 골랐다. 숫자는 좋아졌지만
+//  (내부일관성 0.804) 정작 인증이 안 됐다 — 23초 뒤 손을 다시 올리니 0.523.
+//  한 순간의 거의 동일한 프레임만 남겨서 그 자세에 과적합된 것이다. 서로 잘 맞는
+//  것만 고르는 선별이 오히려 자연스러운 변화를 버리고 있었다.
 //
-//  후보를 12장 모으고 상호 점수가 기준 이상인 것만 남긴다. 남는 게 부족하면
-//  조용히 등록하지 않고 실패시킨다 — 손이 흔들렸다는 걸 그 자리에서 알려준다.
+//  인증에서 이기려면 '한 자세를 정밀하게'가 아니라 '여러 자세를 두루' 담아야 한다.
+//  그래서 회차를 나누고, 회차 사이에는 손이 프레임에서 사라져야 다음으로 넘어간다
+//  — 사용자가 실제로 손을 떼었다 다시 올리게 강제하는 장치다. 얼굴 등록이 포즈
+//  버킷을 돌며 찍는 것과 같은 논리다.
 //
-//  왜 여러 장인가: 참조가 한 장이면 등록 당시 자세에서 조금만 벗어나도 점수가
-//  무너진다. 여러 장 중 '가장 잘 맞는 것'을 쓰면 그 출렁임의 아래쪽 꼬리가 올라간다.
+//  선별은 '완전히 엉뚱한 프레임만 버리는' 수준으로만 한다(다른 샘플 하나와도
+//  안 맞으면 제외). 더 엄격하게 하면 다시 과적합으로 돌아간다.
 //
 
 import Foundation
@@ -28,7 +30,10 @@ final class PalmEnrollmentSession: ObservableObject {
 
     enum Step: Equatable {
         case idle
-        case collecting
+        /// 이번 회차의 샘플을 담는 중.
+        case collecting(round: Int)
+        /// 다음 회차로 가기 전 손을 떼기를 기다리는 중.
+        case waitingForLift(nextRound: Int)
         case done(Int)
         case failed(String)
     }
@@ -40,11 +45,31 @@ final class PalmEnrollmentSession: ObservableObject {
 
     private var candidates: [PalmCode] = []
     private var lastAccepted = Date.distantPast
+    private var handGoneSince: Date?
 
-    var isActive: Bool { step == .collecting }
+    var isActive: Bool {
+        switch step {
+        case .collecting, .waitingForLift: return true
+        default: return false
+        }
+    }
 
-    var progress: Double {
-        Double(collected) / Double(max(1, PalmConfig.enrollmentCandidateCount))
+    private var targetTotal: Int {
+        PalmConfig.enrollmentRounds * PalmConfig.samplesPerRound
+    }
+
+    var progress: Double { Double(collected) / Double(max(1, targetTotal)) }
+
+    /// 지금 사용자가 뭘 해야 하는지. 화면 문구로 그대로 쓴다.
+    var instruction: String {
+        switch step {
+        case .collecting(let r):
+            return "\(r + 1)/\(PalmConfig.enrollmentRounds)회차 — 손바닥을 대고 계세요"
+        case .waitingForLift(let r):
+            return "손을 떼었다가 다시 올려주세요 (\(r + 1)/\(PalmConfig.enrollmentRounds)회차)"
+        default:
+            return ""
+        }
     }
 
     func start() {
@@ -52,21 +77,32 @@ final class PalmEnrollmentSession: ObservableObject {
         collected = 0
         blockedReason = ""
         lastAccepted = .distantPast
-        step = .collecting
-        DiagnosticLog.write("palm 등록 시작 (후보 \(PalmConfig.enrollmentCandidateCount)장 수집 후 일관된 것만 채택)")
+        handGoneSince = nil
+        step = .collecting(round: 0)
+        DiagnosticLog.write(
+            "palm 등록 시작 (\(PalmConfig.enrollmentRounds)회차 × \(PalmConfig.samplesPerRound)장, 회차마다 손을 뗀다)")
     }
 
     func cancel() {
         candidates.removeAll()
         collected = 0
         blockedReason = ""
+        handGoneSince = nil
         step = .idle
     }
 
     /// 손금을 계산한 프레임마다 메인 스레드에서 불린다.
     func feed(_ palm: PalmFrameResult) {
-        guard step == .collecting else { return }
+        switch step {
+        case .collecting(let round):    collect(palm, round: round)
+        case .waitingForLift(let next): awaitLift(palm, nextRound: next)
+        default:                        return
+        }
+    }
 
+    // MARK: - 회차 진행
+
+    private func collect(_ palm: PalmFrameResult, round: Int) {
         if let reason = palm.guidance {
             blockedReason = reason
             return
@@ -74,29 +110,48 @@ final class PalmEnrollmentSession: ObservableObject {
         guard let code = palm.code else { return }
         blockedReason = ""
 
-        // 연속 프레임을 그대로 담으면 거의 같은 사진 N장이 된다.
+        // 연속 프레임을 그대로 담으면 거의 같은 사진이 된다.
         guard Date().timeIntervalSince(lastAccepted) >= PalmConfig.enrollmentSampleInterval else { return }
 
         lastAccepted = Date()
         candidates.append(code)
         collected = candidates.count
-        DiagnosticLog.write(String(format: "palm 후보 %d/%d 텍스처=%.3f 살색=%.2f",
-                                   collected, PalmConfig.enrollmentCandidateCount,
-                                   palm.salience, palm.skinFraction))
+        DiagnosticLog.write(String(format: "palm 후보 %d/%d (%d회차) 텍스처=%.3f",
+                                   collected, targetTotal, round + 1, palm.salience))
 
-        guard candidates.count >= PalmConfig.enrollmentCandidateCount else { return }
-        finalize()
+        guard candidates.count >= (round + 1) * PalmConfig.samplesPerRound else { return }
+
+        let nextRound = round + 1
+        if nextRound >= PalmConfig.enrollmentRounds {
+            finalize()
+        } else {
+            handGoneSince = nil
+            step = .waitingForLift(nextRound: nextRound)
+        }
     }
 
-    /// 후보들 중 '서로 잘 맞는 것들'만 골라 등록한다.
-    ///
-    /// 이게 없으면 서로 어긋난 샘플이 그대로 등록돼(실측 내부일관성 0.516)
-    /// 어떤 프레임을 들이대도 통과할 수 없는 템플릿이 만들어진다. 등록 시점에
-    /// 걸러내면 그 상황이 구조적으로 불가능해지고, 사용자도 즉시 알 수 있다.
-    ///
-    /// 고르는 방법: 후보마다 '나머지 중 몇 개와 잘 맞는지'를 세고, 가장 많이
-    /// 맞는 후보를 중심으로 삼아 그와 잘 맞는 것들만 남긴다. 가장 큰 상호
-    /// 일관 집합을 정확히 찾는 건 조합 문제라 비싸고, 이 근사로 충분하다.
+    /// 손이 실제로 프레임을 벗어났다가 돌아와야 다음 회차를 시작한다.
+    /// 잠깐 흔들려 인식이 끊긴 걸 '뗐다'로 오해하지 않도록 일정 시간 유지를 요구한다.
+    private func awaitLift(_ palm: PalmFrameResult, nextRound: Int) {
+        let handPresent = palm.location.verdict != .noHand
+        if handPresent {
+            handGoneSince = nil
+            blockedReason = ""
+            return
+        }
+        let since = handGoneSince ?? Date()
+        handGoneSince = since
+        guard Date().timeIntervalSince(since) >= PalmConfig.enrollmentLiftSeconds else { return }
+
+        lastAccepted = .distantPast
+        handGoneSince = nil
+        step = .collecting(round: nextRound)
+    }
+
+    // MARK: - 마무리
+
+    /// 완전히 엉뚱한 샘플만 버린다. '서로 가장 잘 맞는 것만' 고르면 다시
+    /// 과적합되므로, 다른 샘플 하나와도 안 맞는 것만 제외한다.
     private func finalize() {
         let n = candidates.count
         guard n >= 2 else {
@@ -104,45 +159,41 @@ final class PalmEnrollmentSession: ObservableObject {
             return
         }
 
-        var pairScore = [[Float]](repeating: [Float](repeating: 0, count: n), count: n)
+        var pair = [[Float]](repeating: [Float](repeating: 0, count: n), count: n)
         for i in 0..<n {
             for j in (i + 1)..<n {
                 let s = PalmMatcher.score(candidates[i], candidates[j]) ?? 0
-                pairScore[i][j] = s
-                pairScore[j][i] = s
+                pair[i][j] = s; pair[j][i] = s
             }
         }
 
-        let floor = PalmConfig.enrollmentConsistencyFloor
-        var bestCenter = 0, bestCount = -1
-        for i in 0..<n {
-            let count = (0..<n).filter { $0 != i && pairScore[i][$0] >= floor }.count
-            if count > bestCount { bestCount = count; bestCenter = i }
+        let floor = PalmConfig.enrollmentValidityFloor
+        let kept = (0..<n).filter { i in
+            (0..<n).contains { $0 != i && pair[i][$0] >= floor }
         }
 
-        var kept = [bestCenter] + (0..<n).filter { $0 != bestCenter && pairScore[bestCenter][$0] >= floor }
-        kept.sort()
-
         guard kept.count >= PalmConfig.enrollmentMinKeptSamples else {
-            let best = pairScore.flatMap { $0 }.max() ?? 0
+            let best = pair.flatMap { $0 }.max() ?? 0
             DiagnosticLog.write(String(
-                format: "palm 등록 실패 — 일관된 샘플 %d개(최소 %d) 최고쌍=%.3f 기준=%.2f",
+                format: "palm 등록 실패 — 유효 샘플 %d개(최소 %d) 최고쌍=%.3f 기준=%.2f",
                 kept.count, PalmConfig.enrollmentMinKeptSamples, best, floor))
-            fail("손이 너무 흔들렸습니다 — 10~12cm 거리에서 같은 자세로 고정하고 다시 시도하세요")
+            fail("손금이 일정하게 안 잡힙니다 — 10~12cm 거리와 조명을 확인하고 다시 시도하세요")
             return
         }
 
         let codes = kept.map { candidates[$0] }
         PalmProfileStore.shared.register(PalmProfile(codes: codes))
 
+        // 여기서 보는 값은 '얼마나 다양한가'다. 예전처럼 높기만 하면 오히려
+        // 과적합 신호라, 최저값이 적당히 낮은 게 정상이다.
         var sims: [Float] = []
         for a in 0..<kept.count {
-            for b in (a + 1)..<kept.count { sims.append(pairScore[kept[a]][kept[b]]) }
+            for b in (a + 1)..<kept.count { sims.append(pair[kept[a]][kept[b]]) }
         }
         let minSim = sims.min() ?? 0
         let avgSim = sims.isEmpty ? 0 : sims.reduce(0, +) / Float(sims.count)
         DiagnosticLog.write(String(
-            format: "palm 등록 완료 후보=%d 채택=%d 내부일관성 평균=%.3f 최저=%.3f (임계 %.2f)",
+            format: "palm 등록 완료 후보=%d 채택=%d 샘플간 평균=%.3f 최저=%.3f (임계 %.2f)",
             n, codes.count, avgSim, minSim, PalmConfig.matchThreshold))
 
         step = .done(codes.count)
