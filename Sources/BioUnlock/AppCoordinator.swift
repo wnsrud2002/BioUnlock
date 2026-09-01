@@ -336,10 +336,12 @@ final class AppCoordinator: ObservableObject {
     /// 사용자가 기기 앞에 있을 가능성이 있을 것. 마지막 조건이 없으면 잠그고
     /// 자리를 비운 내내 카메라가 돈다.
     private func updateLockedCameraReason() {
-        let wanted = ScreenLockMonitor.shared.isLocked
-            && unlock.isEnabled
-            && UserPresence.shared.isPresent
-        setReason(.locked, wanted)
+        let waiting = ScreenLockMonitor.shared.isLocked && unlock.isEnabled
+        // 해제를 기다리는 동안에는 입력 감지를 촘촘히 하고 App Nap 도 막는다.
+        // 안 그러면 카메라가 꺼진 사이 앱이 절전돼, 트랙패드를 건드려도
+        // 카메라가 한참 뒤에야 켜진다.
+        UserPresence.shared.setAlert(waiting)
+        setReason(.locked, waiting && UserPresence.shared.isPresent)
     }
 
     func setReason(_ reason: CameraReason, _ active: Bool) {
