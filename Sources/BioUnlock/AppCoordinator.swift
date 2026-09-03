@@ -265,7 +265,7 @@ final class AppCoordinator: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] locked in
                 guard let self else { return }
-                self.updateLockedCameraReason()
+                self.updateLockedCameraReason(locked: locked)
                 if !locked { Self.warmKeychain() }
             }
             .store(in: &cancellables)
@@ -276,7 +276,7 @@ final class AppCoordinator: ObservableObject {
                 guard let self else { return }
                 self.defaults.set(face, forKey: Keys.faceUnlockEnabled)
                 self.defaults.set(palm, forKey: Keys.palmUnlockEnabled)
-                self.updateLockedCameraReason()
+                self.updateLockedCameraReason(enabled: face || palm)
             }
             .store(in: &cancellables)
 
@@ -285,7 +285,7 @@ final class AppCoordinator: ObservableObject {
         // 배터리와 발열을 먹는다(UserPresence 주석 참고).
         UserPresence.shared.$isPresent
             .removeDuplicates()
-            .sink { [weak self] _ in self?.updateLockedCameraReason() }
+            .sink { [weak self] present in self?.updateLockedCameraReason(present: present) }
             .store(in: &cancellables)
 
         enrollment.$step
@@ -335,26 +335,44 @@ final class AppCoordinator: ObservableObject {
     /// 세 가지가 모두 맞아야 켠다: 화면이 잠겨 있고, 잠금 해제가 켜져 있고,
     /// 사용자가 기기 앞에 있을 가능성이 있을 것. 마지막 조건이 없으면 잠그고
     /// 자리를 비운 내내 카메라가 돈다.
-    private func updateLockedCameraReason() {
-        let waiting = ScreenLockMonitor.shared.isLocked && unlock.isEnabled
+    ///
+    /// 세 인자는 @Published sink 안에서 부를 때 **방금 emit 된 값**을 넘기기 위한
+    /// 것이다. @Published 는 willSet 에서 값을 흘리므로 sink 안에서 프로퍼티를
+    /// 다시 읽으면 한 박자 이전 값이 온다. 이걸 놓쳐서 잠금/해제가 통째로
+    /// 뒤집혀 있었다 — 잠그면 카메라가 꺼지고 해제하면 `.locked` 이유로 켜졌다.
+    /// (같은 함정을 enrollment.$step sink 에서 한 번 겪었다. 여기도 같은 규칙:
+    ///  sink 안에서는 절대 원본 프로퍼티를 다시 읽지 말 것.)
+    private func updateLockedCameraReason(locked: Bool? = nil,
+                                          enabled: Bool? = nil,
+                                          present: Bool? = nil) {
+        // 인자가 없을 때는 @Published 사본 대신 세션을 직접 읽는다. 이쪽은
+        // willSet 타이밍과 무관하게 항상 지금의 진짜 잠금 상태다.
+        let isLocked = locked ?? ScreenLockMonitor.screenIsLocked()
+        let waiting = isLocked && (enabled ?? unlock.isEnabled)
         // 해제를 기다리는 동안에는 입력 감지를 촘촘히 하고 App Nap 도 막는다.
         // 안 그러면 카메라가 꺼진 사이 앱이 절전돼, 트랙패드를 건드려도
         // 카메라가 한참 뒤에야 켜진다.
         UserPresence.shared.setAlert(waiting)
-        setReason(.locked, waiting && UserPresence.shared.isPresent)
+        setReason(.locked, waiting && (present ?? UserPresence.shared.isPresent))
     }
 
     func setReason(_ reason: CameraReason, _ active: Bool) {
         let before = reasons.isEmpty
-        if active { reasons.insert(reason) } else { reasons.remove(reason) }
+        let changed = active ? reasons.insert(reason).inserted : (reasons.remove(reason) != nil)
         let after = reasons.isEmpty
+        // 켜고 끄는 전환에서만 로그를 남기면, 다른 이유로 이미 켜져 있을 때
+        // 무슨 일이 있었는지가 통째로 안 보인다. 잠금/해제가 뒤집혀 있던 걸
+        // 찾을 때 이 공백 때문에 로그만으로는 판단이 안 됐다.
+        if changed {
+            DiagnosticLog.write("camera 이유 \(active ? "+" : "-")\(reason) → \(activeCameraReasons)")
+        }
         guard before != after else { return }
         if after {
             camera.stop()
             DiagnosticLog.write("camera 정지 (남은 이유 없음)")
         } else {
             camera.start()
-            DiagnosticLog.write("camera 시작 (이유: \(reasons.map(\.self)))")
+            DiagnosticLog.write("camera 시작")
         }
     }
 

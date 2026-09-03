@@ -564,6 +564,44 @@ locateSize * Int(extent.width / extent.height)
 실측(2초 폴링): 입력 31초 후 presence 없음 → 트랙패드를 건드리자 0초 만에 있음 → 다시
 30초 후 없음.
 
+### 이 리팩터링이 잠금/해제를 통째로 뒤집었다 (0.2.1에서 수정)
+
+카메라를 켤 조건이 셋으로 늘면서 흩어져 있던 판정을 `updateLockedCameraReason()`
+하나로 묶었다. 그러면서 인자로 받던 값을 프로퍼티 재조회로 바꾼 게 문제였다.
+
+```swift
+- self.setReason(.locked, locked && self.unlock.isEnabled)  // emit 된 인자
++ self.updateLockedCameraReason()                            // 안에서 프로퍼티를 다시 읽음
+```
+
+`@Published` 는 **willSet 에서** 값을 흘린다. sink 안에서 원본 프로퍼티를 다시 읽으면
+아직 저장 전이라 한 박자 이전 값이 온다. `isLocked` · `isEnabled` · `isPresent` 셋 다
+그렇게 읽고 있었고, 결과가 정확히 반대로 나왔다.
+
+```
+12:22:49.930 lock 알림: 잠김
+12:22:49.930 camera 정지 (남은 이유 없음)   ← 잠겼는데 껐다
+12:22:52.045 lock 알림: 해제
+12:22:52.045 camera 시작 (이유: [.locked])  ← 해제됐는데 켰다
+```
+
+presence 경로도 같이 죽어 있었다 — 자리를 비웠다 돌아와 트랙패드를 건드려도
+`isPresent` 가 stale false 라 카메라가 안 켜졌다. 로그에 `presence 있음` 만 찍히고
+`camera 시작` 이 따라오지 않는 것으로 남아 있었다.
+
+고친 방식은 sink 마다 방금 emit 된 값을 인자로 넘기는 것이다. 인자가 없을 때의 기본값은
+`@Published` 사본이 아니라 `ScreenLockMonitor.screenIsLocked()`(CGSession 직접 조회)로
+뒀다 — willSet 타이밍과 무관하게 항상 지금의 진짜 상태다.
+
+두 가지가 이 버그를 오래 끌게 만들었다.
+
+- **같은 함정을 이미 한 번 겪고도 반복했다.** `enrollment.$step` sink 에 "프로퍼티를
+  다시 읽으면 한 단계 이전 값을 본다"는 주석을 달아 뒀는데, 그 교훈이 코드로 강제되지
+  않아 다음 리팩터링에서 그대로 재발했다.
+- **로그가 전환에서만 남았다.** `setReason` 이 '카메라 켜짐↔꺼짐' 순간에만 기록해서,
+  설정 창이 열려 있어 다른 이유로 이미 켜져 있으면 아무것도 안 보였다. 이유가 바뀔
+  때마다 남기도록 바꾸고 나서야 로그만으로 판정이 가능해졌다.
+
 ## 손바닥 — 남은 것
 
 - **타인 데이터셋 검증 없음.** 표본이 본인 양손뿐이다. Tongji/IITD 같은 공개 팜프린트
